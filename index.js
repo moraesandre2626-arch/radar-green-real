@@ -12,20 +12,20 @@ async function sendZap(msg){
   try{ await axios.get(url); } catch(e){}
 }
 
-app.get('/', (req,res)=> res.send('RADAR GREEN ON'));
+app.get('/', (req,res)=> res.send('RADAR GREEN ON - 100 reais'));
 app.get('/testar', async (req,res)=>{
-  await sendZap(`TESTE RADAR GREEN\n\nBanca: ${BANCA} reais\nSTAKE: 2 reais\n\nAPOSTAR AGORA: https://www.bet365.bet.br/casino\n\nProcura por Stock Market ou Crash\n\nAnti-spam 15min ON`);
-  res.send('OK');
+  await sendZap(`TESTE RADAR GREEN OK!\n\nBanca: ${BANCA} reais\nSTAKE: 2 reais\n\nENTRAR: https://www.bet365.bet.br\n\nAnti-spam 15min ON`);
+  res.send('TESTE ENVIADO');
 });
 
 setInterval(async ()=>{
   try{
     const {data} = await axios.get('https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=6');
     let verdes=0;
-    for(let i=1;i<6;i++){ if(parseFloat(data[i][4])>parseFloat(data[i][1])){ verdes++; } }
+    for(let i=1;i<6;i++){ if(parseFloat(data[i][4])>parseFloat(data[i][1])) verdes++; }
     if(verdes>=5 && (Date.now()-ultimoAlerta)>900000){
-      ultimoAlerta = Date.now();
-      await sendZap(`RADAR 5 VERDES! COMPRA AGORA!\n\nBanca: ${BANCA} reais\nStake: 2 reais\n\nENTRAR: https://www.bet365.bet.br/casino\n\nClica em UP/COMPRA`);
+      ultimoAlerta=Date.now();
+      await sendZap(`RADAR 5 VERDES! COMPRA!\nBanca: ${BANCA} reais | Stake: 2 reais\n\nhttps://www.bet365.bet.br`);
     }
   }catch(e){}
 }, 60000);
