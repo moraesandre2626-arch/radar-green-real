@@ -9,13 +9,13 @@ let ultimoAlerta = 0;
 
 async function sendZap(msg){
   const url = `https://api.callmebot.com/whatsapp.php?phone=${PHONE}&text=${encodeURIComponent(msg)}&apikey=${APIKEY}`;
-  try{ await axios.get(url); console.log('Zap OK'); } catch(e){}
+  try{ await axios.get(url); } catch(e){}
 }
 
-app.get('/', (req,res)=> res.send('RADAR GREEN ON - 100 reais'));
+app.get('/', (req,res)=> res.send('RADAR GREEN ON'));
 app.get('/testar', async (req,res)=>{
-  await sendZap(`TESTE RADAR GREEN\n\nBanca base: ${BANCA} reais\nSTAKE 1: 2 reais (2 porcento)\n\nLink: https://www.bet365.com\n\nAnti-spam 15min ATIVO 24h`);
-  res.send('TESTE ENVIADO');
+  await sendZap(`TESTE RADAR GREEN\n\nBanca: ${BANCA} reais\nSTAKE: 2 reais\n\nJOGO DIRETO: https://www.bet365.com/casino/play/tech-stock-market\n\nSe nao abrir, procura por Stock Market na Bet365\n\nAnti-spam 15min ON`);
+  res.send('TESTE OK');
 });
 
 setInterval(async ()=>{
@@ -25,12 +25,11 @@ setInterval(async ()=>{
     for(let i=1;i<6;i++){
       if(parseFloat(data[i][4])>parseFloat(data[i][1])){ verdes++; }
     }
-    const agora = Date.now();
-    if(verdes>=5 && (agora - ultimoAlerta) > 900000){
-      ultimoAlerta = agora;
-      await sendZap(`RADAR GREEN - 5 VELAS VERDES BTC!\n\nBanca: ${BANCA} reais\nSTAKE 1: 2 reais\n\nENTRADA CONFIRMADA!\n\nApostar: https://www.bet365.com`);
+    if(verdes>=5 && (Date.now()-ultimoAlerta)>900000){
+      ultimoAlerta = Date.now();
+      await sendZap(`RADAR 5 VERDES! COMPRA AGORA!\n\nBanca: ${BANCA} reais\nStake: 2 reais (2 porcento)\n\nENTRAR AQUI: https://www.bet365.com/casino/play/tech-stock-market\n\nClica em UP/COMPRA`);
     }
   }catch(e){}
 }, 60000);
 
-app.listen(PORT, ()=> console.log('Radar ON'));
+app.listen(PORT, ()=> console.log('ON'));
