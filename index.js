@@ -7,13 +7,13 @@ const APIKEY = process.env.APIKEY || '5665785';
 
 async function sendZap(msg){
   const url = `https://api.callmebot.com/whatsapp.php?phone=${PHONE}&text=${encodeURIComponent(msg)}&apikey=${APIKEY}`;
-  try{ await axios.get(url); console.log('Zap enviado'); } catch(e){ console.log('Erro Zap', e.message) }
+  try{ await axios.get(url); console.log('Zap enviado'); } catch(e){ console.log('Erro', e.message) }
 }
 
-app.get('/', (req,res)=> res.send('RADAR GREEN ATIVO - Banca R$100'));
+app.get('/', (req,res)=> res.send('RADAR GREEN ATIVO - Banca 100 reais'));
 app.get('/testar', async (req,res)=>{
-  await sendZap('🟢 TESTE RADAR GREEN\n\nSeu número tá OK - Banca base R$100');
-  res.send('TESTE ENVIADO pro Zap '+PHONE);
+  await sendZap('TESTE RADAR GREEN\n\nSeu numero 555591107861 conectado!\n\nBanca base: 100 reais\nSTAKE 1: 2 reais (2 porcento)\n\nMonitorando 5 velas verdes 24h');
+  res.send('TESTE ENVIADO');
 });
 
 setInterval(async ()=>{
@@ -26,12 +26,7 @@ setInterval(async ()=>{
       }
     }
     if(verdes>=5){
-      // NOVA LÓGICA DE BANCA R$100
-      const BANCA = 100;
-      const valorStake = 2.00; // 2% para 5 velas
-      const textoStake = "STAKE 1 - PADRÃO (2%)";
-
-      await sendZap(`🚨 RADAR GREEN 🚨\n\n5 VELAS VERDES SEGUIDAS NO BTC!\n\n💰 ${textoStake}\n💵 Valor: R$ ${valorStake.toFixed(2)}\nBanca base: R$${BANCA},00\n\nSinal de COMPRA!`);
+      await sendZap('RADAR GREEN - 5 VELAS VERDES NO BTC!\n\nBanca 100 reais\nSTAKE 1 - 2 reais (2 porcento)\nSINAL DE COMPRA!');
     }
   }catch(e){}
 }, 60000);
