@@ -3,7 +3,7 @@ const axios = require('axios');
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-const PHONE = '+5555991107861';
+const PHONE = '5555991107861';
 const APIKEY = '5665785';
 
 let ultimoAlerta = 0;
