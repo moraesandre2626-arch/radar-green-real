@@ -4,7 +4,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // COLOCA SEU NUMERO AQUI COM +55
-const PHONE = '+5555912345678';
+const PHONE = '+5555991107861';
 const APIKEY = '3307798';
 const BANCA = 270.85;
 
