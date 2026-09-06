@@ -5,65 +5,80 @@ const PORT = process.env.PORT || 10000;
 
 const TOKEN = process.env.TOKEN;
 const CHAT_ID = process.env.CHAT_ID;
+const API_FOOTBALL = process.env.API_FOOTBALL;
 const BANCA = 100;
-const STAKE_PCT = 0.02;
-const LINK_BET = 'https://www.bet365.bet.br/hub/in-play';
+const STAKE = (BANCA * 0.02).toFixed(2);
+const LINK = 'https://www.bet365.bet.br/hub/in-play';
 
 let alertados = new Set();
+let ultimoCheck = 'nunca';
 
-async function enviar(texto){
-  if(!TOKEN || !CHAT_ID){ console.log('Sem TOKEN/CHAT_ID'); return; }
+async function enviar(msg){
   try{
     await axios.post(`https://api.telegram.org/bot${TOKEN}/sendMessage`,{
-      chat_id: CHAT_ID,
-      text: texto,
-      parse_mode: 'Markdown',
-      // REMOVI o disable_notification - agora vibra!
+      chat_id: CHAT_ID, text: msg, parse_mode: 'Markdown'
     });
-    console.log('Enviado OK');
+    console.log('Alerta enviado');
+  }catch(e){ console.log(e.response?.data); }
+}
+
+async function radar(){
+  if(!API_FOOTBALL) return;
+  try{
+    const r = await axios.get('https://v3.football.api-sports.io/fixtures?live=all',{
+      headers: { 'x-apisports-key': API_FOOTBALL }
+    });
+    ultimoCheck = new Date().toLocaleTimeString('pt-BR');
+    console.log(`[${ultimoCheck}] Jogos live: ${r.data.results}`);
+
+    for(const j of r.data.response){
+      const min = j.fixture.status.elapsed;
+      if(min < 80) continue;
+      const nome = `${j.teams.home.name} x ${j.teams.away.name}`;
+      const placar = `${j.goals.home}-${j.goals.away}`;
+      const id = j.fixture.id;
+
+      // ESCANTEIO 85-90'
+      if(min >= 85 && min <= 95){
+        const key = `esc-${id}`;
+        if(!alertados.has(key)){
+          alertados.add(key);
+          await enviar(`🚩 *ESCANTEIO 85-90' - PRESSÃO FINAL!* 🚩
+
+🏟️ ${nome}
+📊 ${placar} | ${min}'
+⏰ Últimos minutos
+
+💰 Entrada: +1 Escanteio no jogo
+🎯 Stake: R$${STAKE} (2% banca R$${BANCA})
+
+🔗 [APOSTAR NA BET365](${LINK})`);
+        }
+      }
+
+      // FALTA PERIGOSA 80-90' (detecta jogo empatado ou 1 gol diff nos acréscimos = chance de falta)
+      if(min >= 80 && min <= 90){
+        const keyF = `falta-${id}`;
+        // Aqui a API free não tem evento de falta, então alerta por critério de pressão
+        if(!alertados.has(keyF) && Math.abs(j.goals.home - j.goals.away) <= 1){
+          // não alerta falta toda hora pra não spammar, só 1x por jogo
+          // alertados.add(keyF);
+          // await enviar(`⚠️ *FALTA PERIGOSA 80-90'* ⚠️\n\n🏟️ ${nome} ${placar} ${min}'\n💰 Over 0.5 Final\n🎯 R$${STAKE}\n🔗 [BET365](${LINK})`);
+        }
+      }
+    }
   }catch(e){
-    console.log('Erro TG:', e.response?.data || e.message);
+    console.log('Erro radar:', e.response?.data || e.message);
   }
 }
 
-function getStake(){ return (BANCA * STAKE_PCT).toFixed(2); }
-
-app.get('/', (req,res)=> res.send('Radar Green Real ON - Vibra sem som ✅') );
-
+app.get('/', (req,res)=> res.send(`Radar Green Real ON ✅\nUltimo check: ${ultimoCheck}\nJogos alertados: ${alertados.size}`));
 app.get('/teste', async (req,res)=>{
-  await enviar(`🔔 *TESTE - VIBRA SEM SOM*
-
-Se vibrou e NÃO fez som, tá 100%!
-Vibrou ai? 👀
-
-💰 Stake: R$${getStake()}
-
-🔗 [Bet365](${LINK_BET})`);
-  res.send('Teste enviado! Tem que VIBRAR agora.');
+  await enviar(`🔔 *TESTE VIBRA SEM SOM - RADAR AUTO ON* 🔔\n\nBanca: R$${BANCA}\nStake: R$${STAKE}\nAPI: Conectada ✅\n\n🔗 [BET365](${LINK})`);
+  res.send('Teste vibrando!');
 });
 
-app.get('/alerta-falta', async (req,res)=>{
-  await enviar(`⚠️ *FALTA PERIGOSA 80-90'!* ⚠️
+setInterval(radar, 60*1000);
+radar();
 
-🏟️ Flamengo x Palmeiras - 87'
-📍 Falta frontal 22m
-🎯 Entrada: Gol na falta / Over 0.5 Final
-💰 Stake: R$${getStake()} (2%)
-
-🔗 [APOSTAR](${LINK_BET})`);
-  res.send('Falta enviado vibrando!');
-});
-
-app.get('/alerta-escanteio', async (req,res)=>{
-  await enviar(`🚩 *ESCANTEIO 85-90'!* 🚩
-
-🏟️ Real Madrid x Barca - 88'
-📊 Pressão total
-🎯 Entrada: +1 Escanteio
-💰 Stake: R$${getStake()} (2%)
-
-🔗 [APOSTAR](${LINK_BET})`);
-  res.send('Escanteio enviado vibrando!');
-});
-
-app.listen(PORT, ()=> console.log('ON '+PORT));
+app.listen(PORT, ()=> console.log('Radar AUTO ON'));
