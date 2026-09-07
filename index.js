@@ -1,3 +1,6 @@
+// ============================================================
+// ELITE RADAR V6.2 - RELATORIO 23H BRT FIXO + ECONOMIA API
+// ============================================================
 const express = require("express");
 const axios = require("axios");
 const app = express();
@@ -9,58 +12,91 @@ const TELEGRAM_TOKEN = process.env.TOKEN;
 const CHAT_ID = process.env.CHAT_ID;
 const DAILY_API_BUDGET = Number(process.env.DAILY_API_BUDGET || 90);
 const RADAR_INTERVAL_MIN = Number(process.env.RADAR_INTERVAL_MIN || 10);
-const STAKE = Number(process.env.STAKE || 5);
 const MIN_EARLY_SCORE = Number(process.env.MIN_EARLY_SCORE || 82);
 const MIN_LATE_SCORE = Number(process.env.MIN_LATE_SCORE || 78);
 
-let apiRequestsToday = 0, detailCallsToday = 0, apiKeyIndex = 0, lastRadarRun = null, radarStatus = "INICIANDO", bank = 100;
-const stats = { analisados: 0, candidatos: 0, alertas: 0 };
+let apiRequestsToday = 0, apiKeyIndex = 0, lastRadarRun = null, radarStatus = "INICIANDO";
+let lastReportDate = null;
+const stats = { analisados: 0, candidatos: 0, alertas: 0, greens: 0, reds: 0, earlyAlerts: 0, lateAlerts: 0, creditZeroHour: null };
 const alertedFixtures = new Set();
 const history = [];
 const statsCache = new Map();
 
+function getBRTNow(){
+  const now = new Date();
+  const brt = new Date(now.toLocaleString("en-US", {timeZone: "America/Sao_Paulo"}));
+  return brt;
+}
+function todayBRTKey(){
+  const d = getBRTNow();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+}
+function resetIfNewDay(){
+  const today = todayBRTKey();
+  if(global.lastDay !== today){
+    if(global.lastDay){ 
+      console.log(`🔄 Novo dia BRT: ${today} - resetando contadores`);
+    }
+    global.lastDay = today;
+    apiRequestsToday = 0;
+    stats.analisados = 0; stats.candidatos = 0; stats.alertas = 0;
+    stats.earlyAlerts = 0; stats.lateAlerts = 0;
+    stats.creditZeroHour = null;
+    alertedFixtures.clear();
+    history.length = 0;
+  }
+}
+function remainingBudget(){ return Math.max(0, DAILY_API_BUDGET - apiRequestsToday); }
 function normalizeNumber(v){ if(v==null) return 0; const n=Number(String(v).replace("%","").replace(",",".")); return Number.isFinite(n)?n:0; }
 function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
 function getApiKey(){
   if(!API_KEYS.length) return null;
   const k=API_KEYS[apiKeyIndex%API_KEYS.length]; apiKeyIndex=(apiKeyIndex+1)%API_KEYS.length; return k;
 }
-async function apiGet(path,params={},options={}){
+async function apiGet(path,params={}){
+  resetIfNewDay();
+  if(apiRequestsToday >= DAILY_API_BUDGET){
+    if(!stats.creditZeroHour) stats.creditZeroHour = getBRTNow().toLocaleTimeString("pt-BR");
+    console.log(`⛔ Budget zerado ${apiRequestsToday}/${DAILY_API_BUDGET} às ${stats.creditZeroHour}`);
+    return null;
+  }
   const key=getApiKey();
-  if(!key){ console.log("⛔ Nenhuma API key! Verifique API_FOOTBALL no Environment"); return null; }
+  if(!key){ console.log("⛔ Sem API key"); return null; }
   try{
     apiRequestsToday++;
     const r=await axios.get(`https://v3.football.api-sports.io${path}`,{params,headers:{"x-apisports-key":key},timeout:15000});
     return r.data;
-  }catch(e){ console.log("❌ API:",e.message); return null; }
+  }catch(e){ console.log("❌ API",e.response?.status||e.message); return null; }
 }
 async function sendTelegram(msg){
   if(!TELEGRAM_TOKEN||!CHAT_ID) return false;
-  try{ await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`,{chat_id:CHAT_ID,text:msg,parse_mode:"HTML"}); return true; }catch(e){ console.log("Telegram erro"); return false; }
+  try{ await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`,{chat_id:CHAT_ID,text:msg,parse_mode:"HTML",disable_web_page_preview:true}); return true; }catch(e){ return false; }
 }
-function parseTeamStatistics(statistics){
+function parseStats(statistics){
   const res={corners:0,dangerous:0,shotsOn:0,shotsTotal:0};
   if(!Array.isArray(statistics)) return res;
-  for(const teamBlock of statistics){
-    for(const item of (teamBlock.statistics||[])){
-      const t=String(item.type||"").toLowerCase();
-      if(t.includes("corner")) res.corners+=normalizeNumber(item.value);
-      if(t.includes("dangerous")) res.dangerous+=normalizeNumber(item.value);
-      if(t.includes("shots on goal")) res.shotsOn+=normalizeNumber(item.value);
-      if(t==="total shots") res.shotsTotal+=normalizeNumber(item.value);
+  for(const tb of statistics){
+    for(const it of (tb.statistics||[])){
+      const t=String(it.type||"").toLowerCase();
+      if(t.includes("corner")) res.corners+=normalizeNumber(it.value);
+      if(t.includes("dangerous")) res.dangerous+=normalizeNumber(it.value);
+      if(t.includes("shots on goal")) res.shotsOn+=normalizeNumber(it.value);
+      if(t==="total shots") res.shotsTotal+=normalizeNumber(it.value);
     }
   }
   return res;
 }
 async function getStatsForFixtures(ids){
-  const result=new Map();
+  const map=new Map();
+  if(remainingBudget() < 2) return map;
   for(const id of ids.slice(0,2)){
+    if(remainingBudget() < 1) break;
     const data=await apiGet("/fixtures/statistics",{fixture:id});
     if(!data?.response?.length) continue;
-    const parsed=parseTeamStatistics(data.response);
-    result.set(id,parsed); statsCache.set(id,parsed); await sleep(700);
+    const p=parseStats(data.response);
+    map.set(id,p); statsCache.set(id,p); await sleep(800);
   }
-  return result;
+  return map;
 }
 async function getLiveFixtures(){ const d=await apiGet("/fixtures",{live:"all"}); return d?.response||[]; }
 function isRadarWindow(f){
@@ -74,23 +110,28 @@ function isRadarWindow(f){
 function analyzeFixture(fixture,liveStats,windowType){
   const elapsed=normalizeNumber(fixture.fixture?.status?.elapsed);
   const corners=normalizeNumber(liveStats.corners);
-  const cornerRate=elapsed>0?corners/elapsed:0;
-  const projected90=cornerRate*90;
+  const rate=elapsed>0?corners/elapsed:0;
+  const proj=rate*90;
   let score=0; const reasons=[];
-  if(windowType==="EARLY"){ if(corners>=3){score+=20; reasons.push("3+ cantos");} if(projected90>=9){score+=20; reasons.push("ritmo 9+");} }
-  else{ if(corners>=5){score+=20; reasons.push("5+ cantos");} if(projected90>=8){score+=20; reasons.push("ritmo 8+");} }
-  return {fixtureId:fixture.fixture?.id,window:windowType,minute:elapsed,home:fixture.teams?.home?.name||"Casa",away:fixture.teams?.away?.name||"Fora",corners,projected90,score:Math.min(100,score),reasons};
+  if(windowType==="EARLY"){ if(corners>=3){score+=25; reasons.push("3+ cantos");} if(proj>=9){score+=25; reasons.push(`ritmo ${proj.toFixed(1)}`);} if(liveStats.dangerous>=35){score+=15; reasons.push("pressao");} }
+  else{ if(corners>=5){score+=25; reasons.push("5+ cantos");} if(proj>=8){score+=25; reasons.push(`ritmo ${proj.toFixed(1)}`);} if(liveStats.dangerous>=55){score+=15; reasons.push("pressao alta");} }
+  if(liveStats.shotsOn>=2) score+=10;
+  return {fixtureId:fixture.fixture?.id,window:windowType,minute:elapsed,home:fixture.teams?.home?.name||"Casa",away:fixture.teams?.away?.name||"Fora",corners,proj,score:Math.min(100,score),reasons,goals:`${fixture.goals?.home||0}x${fixture.goals?.away||0}`};
 }
 async function runRadar(){
   if(radarStatus==="RODANDO") return;
+  resetIfNewDay();
+  if(remainingBudget() <= 0){ radarStatus=`BUDGET ZERADO ${stats.creditZeroHour}`; return; }
   radarStatus="RODANDO";
   try{
     const live=await getLiveFixtures();
-    console.log(`📊 Ao vivo: ${live.length} | Keys: ${API_KEYS.length} | Budget: ${apiRequestsToday}/${DAILY_API_BUDGET}`);
-    if(!live.length){ radarStatus="SEM JOGOS"; return; }
+    console.log(`📊 [${getBRTNow().toLocaleTimeString("pt-BR")}] Ao vivo:${live.length} Budget:${apiRequestsToday}/${DAILY_API_BUDGET}`);
+    if(!live?.length){ radarStatus="SEM JOGOS"; lastRadarRun=new Date().toISOString(); return; }
+    stats.analisados+=live.length;
     const interesting=[];
-    for(const f of live){ const w=isRadarWindow(f); if(!w) continue; interesting.push({fixture:f,windowType:w}); }
-    if(!interesting.length){ radarStatus="AGUARDANDO JANELA"; return; }
+    for(const f of live){ const w=isRadarWindow(f); if(w) interesting.push({fixture:f,windowType:w}); }
+    if(!interesting.length){ radarStatus="AGUARDANDO JANELA"; lastRadarRun=new Date().toISOString(); return; }
+    console.log(`🎯 ${interesting.length} na janela - buscando stats`);
     const ids=interesting.map(x=>x.fixture.fixture.id);
     const statsMap=await getStatsForFixtures(ids);
     for(const {fixture,windowType} of interesting){
@@ -100,15 +141,74 @@ async function runRadar(){
       const an=analyzeFixture(fixture,ls,windowType);
       const minScore=windowType==="EARLY"?MIN_EARLY_SCORE:MIN_LATE_SCORE;
       if(an.score>=minScore){
-        const msg=`<b>RADAR ${windowType}</b> ${an.score}/100\n${an.home} x ${an.away}\n${an.minute}' Cantos:${an.corners} Proj:${an.projected90.toFixed(1)}`;
-        await sendTelegram(msg); alertedFixtures.add(fid); history.unshift({...an,time:new Date().toISOString()}); stats.alertas++;
+        stats.candidatos++; stats.alertas++;
+        if(windowType==="EARLY") stats.earlyAlerts++; else stats.lateAlerts++;
+        const msg=`🚨 <b>RADAR ${an.window} ${an.score}/100</b>\n⚽ ${an.home} ${an.goals} ${an.away}\n⏱️ ${an.minute}' Cantos:${an.corners} Proj:${an.proj.toFixed(1)}\n💡 ${an.reasons.join(", ")}\n💰 Budget: ${remainingBudget()}/${DAILY_API_BUDGET}`;
+        await sendTelegram(msg);
+        alertedFixtures.add(fid);
+        history.unshift({...an,time:getBRTNow().toISOString()});
+        console.log(`✅ Alerta ${fid} score ${an.score}`);
       }
     }
     lastRadarRun=new Date().toISOString(); radarStatus="AGUARDANDO";
-  }catch(e){ console.log("Erro:",e.message); radarStatus="ERRO: "+e.message; }
+  }catch(e){ console.log("Erro radar:",e.message); radarStatus="ERRO"; }
 }
-app.get("/",(req,res)=>{ res.json({status:radarStatus,lastRun:lastRadarRun,budget:`${apiRequestsToday}/${DAILY_API_BUDGET}`,keys:API_KEYS.length,stats,history:history.slice(0,10)}); });
-app.get("/radar/run",async(req,res)=>{ runRadar(); res.json({ok:true}); });
-app.get("/health",(req,res)=>res.json({ok:true}));
-setInterval(()=>{ runRadar(); }, RADAR_INTERVAL_MIN*60*1000);
-app.listen(PORT,()=>{ console.log(`✅ ELITE RADAR V6.1 na porta ${PORT} com ${API_KEYS.length} chaves`); setTimeout(()=>runRadar(),5000); });
+
+async function sendDailyReport(){
+  resetIfNewDay();
+  const nowBRT = getBRTNow();
+  const today = todayBRTKey();
+  const hora = nowBRT.toLocaleTimeString("pt-BR");
+  const budgetUsed = apiRequestsToday;
+  const budgetLeft = remainingBudget();
+  
+  let msg = `📊 <b>RELATÓRIO DIÁRIO - ${today} - ${hora} BRT</b>\n\n`;
+  msg += `🔍 Jogos analisados: ${stats.analisados}\n`;
+  msg += `🎯 Na janela (30-38' / 70-88'): ${stats.candidatos + stats.alertas}\n`;
+  msg += `🚨 Alertas enviados: ${stats.alertas} (Early: ${stats.earlyAlerts} | Late: ${stats.lateAlerts})\n`;
+  msg += `📈 Histórico: ${history.length} sinais no dia\n\n`;
+  msg += `🔋 <b>API:</b> ${budgetUsed}/${DAILY_API_BUDGET} usados - Restam ${budgetLeft}\n`;
+  if(stats.creditZeroHour) msg += `⛔ Créditos zeraram às ${stats.creditZeroHour} BRT\n`;
+  else msg += `✅ Créditos OK\n\n`;
+  
+  if(history.length > 0){
+    msg += `📋 <b>Últimos sinais:</b>\n`;
+    history.slice(0,3).forEach(h=>{
+      msg += `• ${h.minute}' ${h.home} ${h.goals} ${h.away} - ${h.corners} cantos (${h.score}pts)\n`;
+    });
+  } else {
+    msg += `💤 Hoje sem oportunidades que bateram ${MIN_EARLY_SCORE}+ pontos\n`;
+    msg += `Isso é normal em dias fracos ou quando o budget acaba cedo.`;
+  }
+  
+  msg += `\n\n🤖 Status: ${radarStatus} | Keys: ${API_KEYS.length}`;
+  
+  await sendTelegram(msg);
+  console.log(`📨 Relatório 23h enviado: ${today}`);
+  lastReportDate = today;
+}
+
+// Verifica a cada 1 min se é 23:00 BRT
+setInterval(async ()=>{
+  const nowBRT = getBRTNow();
+  const today = todayBRTKey();
+  if(nowBRT.getHours() === 23 && nowBRT.getMinutes() === 0 && lastReportDate !== today){
+    await sendDailyReport();
+  }
+}, 60*1000);
+
+// Endpoints
+app.get("/",(req,res)=>{ resetIfNewDay(); res.json({status:radarStatus,lastRun:lastRadarRun,budget:`${apiRequestsToday}/${DAILY_API_BUDGET}`,budgetLeft:remainingBudget(),keys:API_KEYS.length,stats,history:history.slice(0,5),brt:getBRTNow().toLocaleString("pt-BR"),nextReport:"23:00 BRT"}); });
+app.get("/radar/run",async(req,res)=>{ runRadar(); res.json({ok:true,budget:remainingBudget()}); });
+app.get("/report/test",(req,res)=>{ sendDailyReport(); res.json({ok:true,msg:"Relatorio de teste enviado no Telegram"}); });
+app.get("/health",(req,res)=>res.json({ok:true,brt:getBRTNow().toLocaleString("pt-BR")}));
+
+// Radar loop
+setInterval(()=>{ runRadar(); }, RADAR_INTERVAL_MIN * 60 * 1000);
+
+app.listen(PORT,()=>{
+  global.lastDay = todayBRTKey();
+  console.log(`✅ V6.2 rodando na porta ${PORT} com ${API_KEYS.length} chaves - BRT: ${getBRTNow().toLocaleString("pt-BR")}`);
+  console.log(`📅 Relatório diário fixo às 23:00 BRT (02:00 UTC)`);
+  setTimeout(()=>runRadar(),5000);
+});
