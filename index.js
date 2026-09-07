@@ -1,5 +1,5 @@
 // ============================================================
-// ELITE RADAR V6.1 - COMPLETO CORRIGIDO FINAL
+// ELITE RADAR V6.1 - COMPLETO CORRIGIDO FINAL - FIXED
 // ============================================================
 const express = require("express");
 const axios = require("axios");
@@ -114,25 +114,4 @@ function analyzeFixture(fixture, liveStats, windowType) {
   let score = 0; const reasons=[];
   if(windowType==="EARLY"){
     if(corners>=3){ score+=15; reasons.push("3+ cantos"); } if(corners>=4){ score+=7; reasons.push("4+ cantos"); }
-    if(projected90>=9){ score+=16; reasons.push("ritmo 9+"); } if(projected90>=11){ score+=7; reasons.push("ritmo muito alto"); }
-    if(dangerous>=35){ score+=13; reasons.push("pressão"); } if(dangerous>=50){ score+=7; reasons.push("muita pressão"); }
-  } else {
-    if(corners>=5){ score+=16; reasons.push("5+ cantos"); } if(corners>=7){ score+=8; reasons.push("7+ cantos"); }
-    if(projected90>=8){ score+=12; reasons.push("ritmo 8+"); } if(projected90>=10){ score+=7; reasons.push("ritmo muito alto"); }
-    if(dangerous>=55){ score+=14; reasons.push("pressão"); } if(dangerous>=75){ score+=7; reasons.push("pressão alta"); }
-  }
-  if(shotsOn>=2){ score+=8; } if(shotsOn>=4){ score+=7; } if(shotsTotal>=7){ score+=6; } if(shotsTotal>=10){ score+=5; } if(blocked>=2){ score+=4; }
-  if(Math.abs(homeGoals-awayGoals)===0){ score+=7; } if(Math.abs(homeGoals-awayGoals)===1){ score+=4; }
-  if(windowType==="EARLY" && elapsed>=32 && elapsed<=37) score+=4;
-  if(windowType==="LATE" && elapsed>=75 && elapsed<=86) score+=4;
-  return { fixtureId: fixture.fixture?.id, window: windowType, minute: elapsed, home: fixture.teams?.home?.name||"Casa", away: fixture.teams?.away?.name||"Fora", homeGoals, awayGoals, corners, dangerous, shotsOn, shotsTotal, blocked, cornerRate, projected90, score: Math.min(100,Math.round(score)), reasons };
-}
-function suggestedLine(analysis){ return analysis.window==="EARLY" && analysis.projected90>=11? analysis.corners+1.5 : analysis.corners+0.5; }
-function extractCornerOdds(data){
-  const results=[];
-  if(!data?.response) return results;
-  for(const f of data.response){
-    for(const b of (f.bookmakers||[])){
-      for(const bet of (b.bets||[])){
-        if(!String(bet.name||"").toLowerCase().includes("corner")) continue;
-        for(const v of (bet.values||[]
+    if(projected90>=9){ score+=16; reasons.push("ritmo 9+"); } if(projected90>=11){ score+=
