@@ -1944,7 +1944,9 @@ setInterval(
     "API configurada:",
     !!API
   );
-
+API_FOOTBALL = sua_chave_1_atual
+API_FOOTBALL_2 = chave_nova_2
+API_FOOTBALL_3 = chave_nova_3
 
   console.log(
     "Telegram configurado:",
