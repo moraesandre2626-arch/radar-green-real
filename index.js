@@ -1,71 +1,44 @@
-const express=require("express");
-const axios=require("axios");
-const app=express();
-const PORT=process.env.PORT||10000;
+const express = require("express");
+const axios = require("axios");
+const app = express();
+const PORT = process.env.PORT || 10000;
 
-const TOKEN=process.env.TELEGRAM_BOT_TOKEN||process.env.TELEGR||process.env.TELEGRAM_TOKEN||"";
-const CHAT=process.env.CHAT_ID||process.env.TELEGRAM_CHAT_ID||"";
+const TOKEN = (process.env.TELEGRAM_BOT_TOKEN || "").trim();
+const CHAT_ID = (process.env.CHAT_ID || "").trim();
+const EFO_IDS_RAW = process.env.EFO_IDS || "d74b999bbee306c89c611ef43fd4854f,d0ea94777078ab9401d9b31f1f1d2a30";
+const EFO_IDS = EFO_IDS_RAW.split(",").map(s=>s.trim()).filter(Boolean);
 
-let ultimoProxy="nenhum",ultimoErro=null;
-let ultimosAlertas={};
-
-async function send(t){
-  if(!TOKEN||!CHAT)return false;
-  try{
-    await axios.post(`https://api.telegram.org/bot${TOKEN}/sendMessage`,{
-      chat_id:CHAT,
-      text:t,
-      parse_mode:"Markdown"
+async function sendTelegram(texto) {
+  try {
+    const r = await axios.post(`https://api.telegram.org/bot${TOKEN}/sendMessage`, {
+      chat_id: CHAT_ID,
+      text: texto
     });
-    return true;
-  }catch(e){
-    ultimoErro=e.response?.data?.description||e.message;
-    return false;
+    return { ok: true, data: r.data };
+  } catch (e) {
+    return { ok: false, erro: e.response?.data?.description || e.message, token_len: TOKEN.length };
   }
 }
 
-app.get("/",(req,res)=>res.json({
-  status:"online",
-  v:"V11 PRESSÃO",
-  proxy:ultimoProxy,
-  token:TOKEN?TOKEN.substring(0,5)+"...":"FALTA",
-  chat:CHAT||"FALTA",
-  rotas:["/telegram-test","/radar-pressao","/radar"]
-}));
-
-app.get("/telegram-test",async(req,res)=>{
-  const ok=await send(`🟢 *RADAR V11 ONLINE* - ${new Date().toLocaleString("pt-BR")}\ntoken_len:${TOKEN.length}`);
-  res.json({enviado:ok,proxy:ultimoProxy,erro:ultimoErro,token_len:TOKEN.length});
+app.get("/", (req,res)=>{
+  res.json({
+    status:"online",
+    v:"V12.2 ANTI-TRAVA FIX",
+    proxy:"nenhum",
+    token: TOKEN ? TOKEN.slice(0,5)+"..." : "VAZIO",
+    chat: CHAT_ID,
+    ids: EFO_IDS,
+    rotas: ["/telegram-test","/radar","/tabela"]
+  });
 });
 
-app.get("/radar-pressao",async(req,res)=>{
-  const jogo={
-    mandante:"Real Madrid",
-    visitante:"Inter",
-    placar:"2-0",
-    minuto:70,
-    stats_1tempo:{
-      mandante:{chutes:6,chutesGol:4,escanteios:1},
-      visitante:{chutes:11,chutesGol:3,escanteios:4}
-    }
-  };
-
-  const visitantePressionando = jogo.stats_1tempo.visitante.chutes>=8 && jogo.stats_1tempo.visitante.escanteios>=3 && jogo.stats_1tempo.visitante.chutesGol>=2;
-  let alertas=0;
-
-  if(visitantePressionando){
-    const chave=`${jogo.visitante}-${jogo.minuto}`;
-    if(!ultimosAlertas[chave]){
-      const msg=`🔥 *PRESSÃO DETECTADA - IGUAL SUA PRINT* 🔥\n\n⚽ ${jogo.mandante} ${jogo.placar} ${jogo.visitante} (${jogo.minuto}')\n\n📊 Stats 1º Tempo:\nInter: ${jogo.stats_1tempo.visitante.chutes} chutes | ${jogo.stats_1tempo.visitante.chutesGol} no gol | ${jogo.stats_1tempo.visitante.escanteios} escanteios\n\n💡 Time perdendo mas com volume MAIOR = Tendência de gol\nEntrada: Over 0.5`;
-      const ok=await send(msg);
-      if(ok) alertas=1;
-      ultimosAlertas[chave]=Date.now();
-    }
-  }
-
-  res.json({jogo,pressao_detectada:visitantePressionando,alertas_enviados:alertas});
+app.get("/telegram-test", async (req,res)=>{
+  const msg = `RADAR V12.2 ONLINE\nIDs: ${EFO_IDS.length}\n${EFO_IDS.join("\n")}`;
+  const result = await sendTelegram(msg);
+  res.json({ enviado: result.ok, ...result });
 });
 
-app.get("/radar",async(req,res)=>{res.json({ok:true,v:"V11"});});
+app.get("/radar", (req,res)=> res.json({ ok:true, ids:EFO_IDS }));
+app.get("/tabela", (req,res)=> res.json({ ok:true, total:EFO_IDS.length, ids:EFO_IDS }));
 
-app.listen(PORT,()=>console.log("V11 PRESSÃO ONLINE"));
+app.listen(PORT, ()=>console.log("V12.2 RODANDO"));
