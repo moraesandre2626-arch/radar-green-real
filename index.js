@@ -1,27 +1,17 @@
 const express=require("express");const axios=require("axios");const app=express();app.use(express.json());const PORT=process.env.PORT||10000;
-const PROXY_LIST=["https://corsproxy.io/?","https://api.allorigins.win/raw?url=","https://proxy.corsfix.com/?","https://thingproxy.freeboard.io/fetch/"];
-const TELEGRAM_TOKEN=process.env.TELEGRAM_BOT_TOKEN||process.env.TELEGRAM_TOKEN||"";const CHAT_ID=process.env.TELEGRAM_CHAT_ID||process.env.CHAT_ID||"";
-const POLL_MINUTES=Number(process.env.POLL_MINUTES||5);const SCORE_MIN=Number(process.env.SCORE_MIN||78);const SCORE_FORTE=88;const MAX_ALERTAS=3;const MAX_STATS=3;
-const historico=new Map(),enviados=new Map(),historicoPressao=new Map();let radarRodando=false,ultimoRadar=null,ultimoErro=null,ultimoProxy="nenhum";
-const http=axios.create({timeout:25000,headers:{"User-Agent":"Mozilla/5.0 Chrome/120","Accept":"application/json","Referer":"https://www.sofascore.com/","Origin":"https://www.sofascore.com"}});
-async function sofaGet(path){
- try{const r=await http.get(`https://www.sofascore.com/api/v1${path}`);if(r.data&&(r.data.events||r.data.statistics||r.data.graphPoints)){ultimoProxy="direto";return r;}}catch(e){}
- for(const proxy of PROXY_LIST){
-  try{const url=`https://www.sofascore.com/api/v1${path}`;const r=await http.get(`${proxy}${encodeURIComponent(url)}`);if(r.data&&(r.data.events||r.data.statistics||r.data.graphPoints)){ultimoProxy=proxy.split("/")[2];return r;}}catch(e){continue;}
- }
+const PROXY_LIST=["https://corsproxy.io/?","https://api.allorigins.win/raw?url=","https://proxy.cors.sh/","https://thingproxy.freeboard.io/fetch/","https://api.codetabs.com/v1/proxy?quest=","https://cors-anywhere.herokuapp.com/","https://yacdn.org/proxy/","https://api.cors.lol/?url="];
+const TOKEN=process.env.TELEGRAM_BOT_TOKEN||process.env.TELEGRAM_TOKEN||process.env.TELEGR||"";const CHAT=process.env.CHAT_ID||process.env.TELEGRAM_CHAT_ID||"";
+let ultimoProxy="nenhum",ultimoErro=null,ultimoRadar=null;
+const http=axios.create({timeout:30000,headers:{"User-Agent":"Mozilla/5.0 Chrome/122","Referer":"https://www.sofascore.com/","Origin":"https://www.sofascore.com/"}});
+async function sofaGet(p){
+ try{const r=await http.get(`https://www.sofascore.com/api/v1${p}`);if(r.data&&(r.data.events||r.data.statistics||r.data.graphPoints)){ultimoProxy="direto";return r;}}catch(e){}
+ for(const pr of PROXY_LIST){try{const t=`https://www.sofascore.com/api/v1${p}`;const u=`${pr}${encodeURIComponent(t)}`;const r=await http.get(u,{timeout:30000});if(r.data&&JSON.stringify(r.data).length>100){ultimoProxy=pr.split("/")[2];return r;}}catch(e){continue;}}
  throw new Error("Proxy falhou");
 }
-function num(v){if(v==null)return 0;const n=parseFloat(String(v).replace("%","").replace(",",".").trim());return isFinite(n)?n:0;}
-function esperar(ms){return new Promise(r=>setTimeout(r,ms));}
-async function enviarTelegram(t){if(!TELEGRAM_TOKEN||!CHAT_ID)return false;try{await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`,{chat_id:CHAT_ID,text:t,parse_mode:"Markdown"},{timeout:10000});return true;}catch{return false;}}
-function obterMinuto(j){const m=num(j.time?.minute);if(m>0)return Math.floor(m);const ini=j.time?.currentPeriodStartTimestamp;if(ini){const dif=Math.floor(Date.now()/1000)-Number(ini);if(dif>=0&&dif<7200)return Math.floor(dif/60);}return 0;}
-function extrairStats(data){const s={shots:0,corners:0,dangerousAttacks:0};const lista=data?.statistics||[];let grupos=[];const all=lista.find(x=>String(x.period).toUpperCase()==="ALL");if(all)grupos=all.groups||[];else grupos=lista.flatMap(x=>x.groups||[]);for(const g of grupos){for(const it of g.statisticsItems||[]){const nome=String(it.name||"").toLowerCase();const h=num(it.home),a=num(it.away);if(nome.includes("total shots"))s.shots=h+a;if(nome.includes("corner"))s.corners=h+a;if(nome.includes("dangerous attack"))s.dangerousAttacks=h+a;}}return s;}
-function detectarPressao(pts){if(!pts||pts.length<10)return null;const ult10=pts.slice(-10);const home=ult10.filter(p=>num(p.value)>60).length;const away=ult10.filter(p=>num(p.value)<-60).length;if(home>=7)return{time:"HOME",forca:80};if(away>=7)return{time:"AWAY",forca:80};return null;}
-function detectarVirada(id, atual){if(!atual)return null;if(!historicoPressao.has(id))historicoPressao.set(id,[]);const hist=historicoPressao.get(id);hist.push({time:atual.time});if(hist.length>8)hist.shift();if(hist.length<4)return null;const antes=hist.slice(-4,-1);if(antes.some(h=>h.time!==atual.time))return{virada:true,de:antes[0].time,para:atual.time,forca:atual.forca};return null;}
-async function radar(){if(radarRodando)return{jogos:0};radarRodando=true;let jogos=0,sinais=0;try{const res=await sofaGet("/sport/football/events/live");const eventos=res.data?.events||[];jogos=eventos.length;const lista=eventos.map(j=>({jogo:j,minuto:obterMinuto(j)})).filter(i=>i.minuto>=65&&i.minuto<=90).slice(0,3);for(const item of lista){if(sinais>=3)break;const jogo=item.jogo;let stats=null;try{const r=await sofaGet(`/event/${jogo.id}/statistics`);stats=extrairStats(r.data);}catch{}await esperar(2500);let graph=null;try{const r=await sofaGet(`/event/${jogo.id}/graph`);graph=r.data.graphPoints||[];}catch{}const pressao=detectarPressao(graph);const virada=detectarVirada(jogo.id,pressao);let score=45;const motivos=[];if(stats&&stats.corners>=5){score+=12;motivos.push(`${stats.corners} esc`);}if(pressao){score+=18;motivos.push(`PRESSÃO ${pressao.time} ${pressao.forca}%`);}if(virada&&virada.virada){score+=22;motivos.push(`VIRADA ${virada.de}->${virada.para} 🔥`);}if(score>=SCORE_MIN){const id=`${jogo.id}-ESC`;const ant=enviados.get(id);if(!ant||Date.now()-ant.timestamp>1800000){let msg=`🟢 *V9 ${score}/100* ⚽ *${jogo.homeTeam?.name}* ${jogo.homeScore?.current||0}x${jogo.awayScore?.current||0} *${jogo.awayTeam?.name}* ⏱️${item.minuto}'\n\n🎯 ESCANTEIOS - PRESSÃO\n• ${motivos.join("\n• ")}\n📈 ${stats?`${stats.shots} chutes / ${stats.corners} esc`:"sem stats"}`;if(await enviarTelegram(msg)){enviados.set(id,{timestamp:Date.now()});sinais++;}}await esperar(2500);}}ultimoRadar=new Date().toISOString();ultimoErro=null;return{jogos,sinais,proxy:ultimoProxy};}catch(e){ultimoErro=e.message;return{jogos,sinais,erro:e.message,proxy:ultimoProxy};}finally{radarRodando=false;}}
-app.get("/",(req,res)=>res.json({status:"online",v:"V9 PRESSAO FIX LIMPO",hora:new Date().toLocaleString("pt-BR",{timeZone:"America/Sao_Paulo"}),proxy:ultimoProxy,ultimoRadar,ultimoErro}));
+async function send(t){if(!TOKEN||!CHAT)return false;try{await axios.post(`https://api.telegram.org/bot${TOKEN}/sendMessage`,{chat_id:CHAT,text:t,parse_mode:"Markdown"});return true;}catch(e){ultimoErro=e.response?.data?.description||e.message;return false;}}
+async function radar(){try{const r=await sofaGet("/sport/football/events/live");ultimoRadar=new Date().toISOString();ultimoErro=null;return{jogos:r.data.events?.length||0,proxy:ultimoProxy,ok:true};}catch(e){ultimoErro=e.message;return{erro:e.message,proxy:ultimoProxy};}}
+app.get("/",async(req,res)=>{if(ultimoProxy==="nenhum")await radar().catch(()=>{});res.json({status:"online",v:"V10 ULTRA FIX",hora:new Date().toLocaleString("pt-BR",{timeZone:"America/Sao_Paulo"}),proxy:ultimoProxy,ultimoRadar,ultimoErro,token:TOKEN?"ok":"falta",chat:CHAT?"ok":"falta"});});
 app.get("/radar",async(req,res)=>res.json(await radar()));
-app.get("/telegram-test",async(req,res)=>{const ok=await enviarTelegram(`🟢 *V9 FIX OK* - Proxy: ${ultimoProxy} - Pronto pra escanteio`);res.json({enviado:ok,proxy:ultimoProxy});});
-app.listen(PORT,()=>console.log(`V9 na porta ${PORT}`));
-setInterval(()=>{radar().catch(()=>{});},POLL_MINUTES*60*1000);
-setTimeout(()=>{radar().catch(()=>{});},5000);
+app.get("/telegram-test",async(req,res)=>{const ok=await send(`🟢 *V10 ULTRA OK* - Proxy: ${ultimoProxy} - ${new Date().toLocaleString("pt-BR")}`);res.json({enviado:ok,proxy:ultimoProxy,erro:ultimoErro});});
+app.listen(PORT,()=>console.log("V10 na porta "+PORT));
+setInterval(()=>radar().catch(()=>{}),5*60*1000);
