@@ -1,7 +1,13 @@
-ELITE_SCORE=65
-ODD_MIN=1.65
-ODD_MAX=2.80
-EARLY_START=25
-EARLY_END=45
-LATE_START=65
-LATE_END=89
+{
+  "name": "radar-green-real",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "axios": "^1.6.0"
+  }
+}
