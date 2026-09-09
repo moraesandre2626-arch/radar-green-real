@@ -1059,3 +1059,13 @@ for jogador in lista_de_jogadores_da_print:
     aviso_falta = filtro_falta_perfil_bontempo(jogador)
     if aviso_falta:
         enviar_mensagem(aviso_falta)
+import requests
+
+def enviar_telegram(mensagem):
+    token = "SEU_TOKEN_AQUI"  # o mesmo do seu robô de escanteio
+    chat_id = "SEU_CHAT_ID_AQUI"
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    requests.post(url, data={"chat_id": chat_id, "text": mensagem})
+
+# Quando der ENTRA:
+enviar_telegram(f"✅ ENTRA - {jogador['nome']} 2+ faltas @ {jogador['odd2']}")
