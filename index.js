@@ -1054,3 +1054,8 @@ app.listen(
       `🚀 ELITE RADAR V21 RODANDO NA PORTA ${PORT}`
     )
 );
+# COLA ISSO NO FINAL DO SEU CÓDIGO, DEPOIS DO ESCANTEIO
+for jogador in lista_de_jogadores_da_print:
+    aviso_falta = filtro_falta_perfil_bontempo(jogador)
+    if aviso_falta:
+        enviar_mensagem(aviso_falta)
