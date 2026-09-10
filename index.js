@@ -1,16 +1,16 @@
 // ============================================================
-// ELITE RADAR V22 - PRESSÃO INTELIGENTE + RELATÓRIO 23H
+// ELITE RADAR V23 - PRESSÃO INTELIGENTE
+// REFERÊNCIA: PALMEIRAS x LDU
 // ============================================================
-// - Pressão bilateral
-// - Pressão forte de um único lado
-// - Domínio + finalizações
-// - Placar inteligente
-// - 12+ chutes
-// - Até 5 escanteios
-// - Score mínimo 65
-// - Relatório diário às 23h BRT
-// - Anti-spam por jogo
-// - Proxy anti-403
+// PRESSÃO FORTE:
+// 9+ chutes
+// 4+ no alvo
+// vantagem de 4+ chutes
+// até 4 escanteios
+//
+// SCORE MÍNIMO: 65
+// VARREDURA: 20 MINUTOS
+// RELATÓRIO: TODOS OS DIAS ÀS 23H BRT
 // ============================================================
 
 const express = require("express");
@@ -20,6 +20,10 @@ const app = express();
 app.use(express.json());
 
 const PORT = process.env.PORT || 10000;
+
+// ============================================================
+// TELEGRAM
+// ============================================================
 
 const TOKEN = (
   process.env.TELEGRAM_BOT_TOKEN ||
@@ -33,6 +37,10 @@ const CHAT_ID = (
   process.env.TELEGRAM_CHAT_ID ||
   ""
 ).trim();
+
+// ============================================================
+// CONFIGURAÇÕES
+// ============================================================
 
 const SCORE_MINIMO = 65;
 const INTERVALO_MINUTOS = 20;
@@ -49,8 +57,12 @@ let JOGOS_JA_AVISADOS = new Set();
 let RELATORIO_ENVIADO_HOJE = false;
 let DIA_RELATORIO = "";
 
+// ============================================================
+// FUNÇÕES BÁSICAS
+// ============================================================
+
 function dormir(ms) {
-  return new Promise(r => setTimeout(r, ms));
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 function numero(v) {
@@ -70,7 +82,8 @@ function numero(v) {
 }
 
 function textoSeguro(v) {
-  return String(v || "").replace(/[*_`\[\]]/g, "");
+  return String(v || "")
+    .replace(/[*_`\[\]]/g, "");
 }
 
 // ============================================================
@@ -86,22 +99,30 @@ function agoraBrasil() {
 }
 
 function podeRodarAgora() {
+
   const agora = agoraBrasil();
+
   const h = agora.getHours();
   const d = agora.getDay();
 
-  const fimDeSemana = d === 0 || d === 6;
+  const fimDeSemana =
+    d === 0 || d === 6;
 
-  return fimDeSemana
-    ? h >= 8 && h < 24
-    : h >= 12 && h < 24;
+  if (fimDeSemana) {
+    return h >= 8 && h < 24;
+  }
+
+  return h >= 12 && h < 24;
 }
 
 function horarioTexto() {
-  const brasil = agoraBrasil();
-  const d = brasil.getDay();
 
-  return (d === 0 || d === 6)
+  const agora = agoraBrasil();
+  const d = agora.getDay();
+
+  return (
+    d === 0 || d === 6
+  )
     ? "Sab-Dom 08h-00h BRT"
     : "Seg-Sex 12h-00h BRT";
 }
@@ -147,14 +168,16 @@ async function sendTelegram(texto) {
 }
 
 // ============================================================
-// SOFASCORE + PROXY
+// SOFASCORE
 // ============================================================
 
 const HEADERS = {
+
   "User-Agent":
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36",
 
-  "Accept": "application/json",
+  "Accept":
+    "application/json",
 
   "Referer":
     "https://www.sofascore.com/",
@@ -165,15 +188,20 @@ const HEADERS = {
 
 async function getSofascore(url) {
 
+  // ----------------------------------------------------------
+  // ACESSO DIRETO
+  // ----------------------------------------------------------
+
   try {
 
-    const resposta = await axios.get(
-      url,
-      {
-        headers: HEADERS,
-        timeout: 12000
-      }
-    );
+    const resposta =
+      await axios.get(
+        url,
+        {
+          headers: HEADERS,
+          timeout: 12000
+        }
+      );
 
     return resposta.data;
 
@@ -183,46 +211,62 @@ async function getSofascore(url) {
       throw e;
     }
 
-    console.log("403 direto. Tentando proxy 1...");
+    console.log(
+      "403 direto. Tentando proxy 1..."
+    );
   }
+
+  // ----------------------------------------------------------
+  // PROXY 1
+  // ----------------------------------------------------------
 
   try {
 
     const proxyUrl =
       `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
 
-    const resposta = await axios.get(
-      proxyUrl,
-      {
-        timeout: 15000
-      }
-    );
+    const resposta =
+      await axios.get(
+        proxyUrl,
+        {
+          timeout: 15000
+        }
+      );
 
-    console.log("Proxy 1 funcionou!");
+    console.log(
+      "Proxy 1 funcionou!"
+    );
 
     return typeof resposta.data === "string"
       ? JSON.parse(resposta.data)
       : resposta.data;
 
-  } catch (e2) {
+  } catch (e) {
 
     console.log(
       "Proxy 1 falhou. Tentando proxy 2..."
     );
   }
 
+  // ----------------------------------------------------------
+  // PROXY 2
+  // ----------------------------------------------------------
+
   const proxyUrl2 =
     `https://corsproxy.io/?${encodeURIComponent(url)}`;
 
-  const resposta3 = await axios.get(
-    proxyUrl2,
-    {
-      headers: HEADERS,
-      timeout: 15000
-    }
-  );
+  const resposta3 =
+    await axios.get(
+      proxyUrl2,
+      {
+        headers: HEADERS,
+        timeout: 15000
+      }
+    );
 
-  console.log("Proxy 2 funcionou!");
+  console.log(
+    "Proxy 2 funcionou!"
+  );
 
   return typeof resposta3.data === "string"
     ? JSON.parse(resposta3.data)
@@ -230,7 +274,7 @@ async function getSofascore(url) {
 }
 
 // ============================================================
-// ESTATÍSTICAS
+// EXTRAIR ESTATÍSTICAS
 // ============================================================
 
 function extrairEstatisticas(periodo) {
@@ -255,22 +299,35 @@ function extrairEstatisticas(periodo) {
   let posseCasa = 0;
   let posseFora = 0;
 
-  for (const grupo of periodo?.groups || []) {
+  for (
+    const grupo of periodo?.groups || []
+  ) {
 
-    for (const item of grupo.statisticsItems || []) {
+    for (
+      const item of grupo.statisticsItems || []
+    ) {
 
       const nome =
-        String(item.name || "").toLowerCase();
+        String(item.name || "")
+          .toLowerCase();
 
-      const home = numero(item.home);
-      const away = numero(item.away);
+      const home =
+        numero(item.home);
+
+      const away =
+        numero(item.away);
+
+      // ------------------------------------------------------
+      // ESCANTEIOS
+      // ------------------------------------------------------
 
       if (
         nome.includes("corner") ||
         nome.includes("escanteio")
       ) {
 
-        escanteios += home + away;
+        escanteios +=
+          home + away;
 
         cantosCasa += home;
         cantosFora += away;
@@ -278,13 +335,18 @@ function extrairEstatisticas(periodo) {
         continue;
       }
 
+      // ------------------------------------------------------
+      // CHUTES
+      // ------------------------------------------------------
+
       if (
         nome === "total shots" ||
         nome === "shots" ||
         nome.includes("total shots")
       ) {
 
-        chutes += home + away;
+        chutes +=
+          home + away;
 
         chutesCasa += home;
         chutesFora += away;
@@ -292,13 +354,18 @@ function extrairEstatisticas(periodo) {
         continue;
       }
 
+      // ------------------------------------------------------
+      // NO ALVO
+      // ------------------------------------------------------
+
       if (
         nome.includes("shots on target") ||
         nome.includes("shots on goal") ||
         nome.includes("on target")
       ) {
 
-        chutesNoAlvo += home + away;
+        chutesNoAlvo +=
+          home + away;
 
         alvoCasa += home;
         alvoFora += away;
@@ -306,13 +373,23 @@ function extrairEstatisticas(periodo) {
         continue;
       }
 
-      if (nome.includes("dangerous attacks")) {
+      // ------------------------------------------------------
+      // ATAQUES PERIGOSOS
+      // ------------------------------------------------------
+
+      if (
+        nome.includes("dangerous attacks")
+      ) {
 
         ataquesPerigososCasa += home;
         ataquesPerigososFora += away;
 
         continue;
       }
+
+      // ------------------------------------------------------
+      // POSSE
+      // ------------------------------------------------------
 
       if (
         nome.includes("ball possession") ||
@@ -328,24 +405,31 @@ function extrairEstatisticas(periodo) {
   }
 
   return {
+
     escanteios,
+
     chutes,
     chutesNoAlvo,
+
     chutesCasa,
     chutesFora,
+
     alvoCasa,
     alvoFora,
+
     cantosCasa,
     cantosFora,
+
     ataquesPerigososCasa,
     ataquesPerigososFora,
+
     posseCasa,
     posseFora
   };
 }
 
 // ============================================================
-// PRESSÃO INTELIGENTE V22
+// PRESSÃO INTELIGENTE V23
 // ============================================================
 
 function analisarPressao(dados, jogo) {
@@ -353,15 +437,29 @@ function analisarPressao(dados, jogo) {
   const motivos = [];
   let bonus = 0;
 
-  const {
-    chutesCasa,
-    chutesFora,
-    alvoCasa,
-    alvoFora,
-    posseCasa,
-    posseFora,
-    chutes
-  } = dados;
+  const chutesCasa =
+    dados.chutesCasa;
+
+  const chutesFora =
+    dados.chutesFora;
+
+  const alvoCasa =
+    dados.alvoCasa;
+
+  const alvoFora =
+    dados.alvoFora;
+
+  const posseCasa =
+    dados.posseCasa;
+
+  const posseFora =
+    dados.posseFora;
+
+  const totalChutes =
+    dados.chutes;
+
+  const totalAlvo =
+    dados.chutesNoAlvo;
 
   const golsCasa =
     numero(jogo.homeScore?.current);
@@ -369,9 +467,9 @@ function analisarPressao(dados, jogo) {
   const golsFora =
     numero(jogo.awayScore?.current);
 
-  // ----------------------------------------------------------
-  // 1. PRESSÃO BILATERAL
-  // ----------------------------------------------------------
+  // ==========================================================
+  // PRESSÃO BILATERAL
+  // ==========================================================
 
   if (
     chutesCasa >= 6 &&
@@ -387,63 +485,80 @@ function analisarPressao(dados, jogo) {
     );
   }
 
-  // ----------------------------------------------------------
-  // 2. PRESSÃO MUITO FORTE DO MANDANTE
-  // ----------------------------------------------------------
+  // ==========================================================
+  // NOVA REGRA PRINCIPAL
+  // REFERÊNCIA PALMEIRAS x LDU
+  //
+  // 9+ chutes
+  // 4+ no alvo
+  // 4+ chutes de vantagem
+  // ==========================================================
 
-  if (
+  const mandantePressaoForte =
     chutesCasa >= 9 &&
-    chutesCasa >= chutesFora + 4 &&
-    alvoCasa >= alvoFora + 1
-  ) {
+    alvoCasa >= 4 &&
+    chutesCasa >= chutesFora + 4;
 
-    bonus += 12;
-
-    motivos.push(
-      "🏠 mandante pressionando forte"
-    );
-  }
-
-  // ----------------------------------------------------------
-  // 3. PRESSÃO MUITO FORTE DO VISITANTE
-  // ----------------------------------------------------------
-
-  if (
+  const visitantePressaoForte =
     chutesFora >= 9 &&
-    chutesFora >= chutesCasa + 4 &&
-    alvoFora >= alvoCasa + 1
-  ) {
+    alvoFora >= 4 &&
+    chutesFora >= chutesCasa + 4;
 
-    bonus += 12;
+  if (mandantePressaoForte) {
+
+    bonus += 16;
 
     motivos.push(
-      "✈️ visitante pressionando forte"
+      "🏠 PRESSÃO FORTE DO MANDANTE"
+    );
+
+    motivos.push(
+      `🔥 ${chutesCasa} chutes / ${alvoCasa} no alvo`
     );
   }
 
-  // ----------------------------------------------------------
-  // 4. VOLUME ABSOLUTO MUITO ALTO
-  // ----------------------------------------------------------
+  if (visitantePressaoForte) {
+
+    bonus += 16;
+
+    motivos.push(
+      "✈️ PRESSÃO FORTE DO VISITANTE"
+    );
+
+    motivos.push(
+      `🔥 ${chutesFora} chutes / ${alvoFora} no alvo`
+    );
+  }
+
+  // ==========================================================
+  // VOLUME MUITO FORTE
+  // ==========================================================
 
   if (
-    chutes >= 18 &&
-    (alvoCasa >= 3 || alvoFora >= 3)
+    totalChutes >= 18 &&
+    totalAlvo >= 6
   ) {
 
     bonus += 7;
 
     motivos.push(
-      "💥 volume ofensivo elevado"
+      "💥 volume ofensivo muito alto"
     );
   }
 
-  // ----------------------------------------------------------
-  // 5. POSSE COM FINALIZAÇÃO
-  // ----------------------------------------------------------
+  // ==========================================================
+  // DOMÍNIO + FINALIZAÇÃO
+  // ==========================================================
 
   if (
-    Math.max(posseCasa, posseFora) >= 62 &&
-    Math.max(chutesCasa, chutesFora) >= 8
+    Math.max(
+      posseCasa,
+      posseFora
+    ) >= 62 &&
+    Math.max(
+      chutesCasa,
+      chutesFora
+    ) >= 8
   ) {
 
     bonus += 5;
@@ -453,15 +568,19 @@ function analisarPressao(dados, jogo) {
     );
   }
 
-  // ----------------------------------------------------------
-  // 6. DOMÍNIO SEM FINALIZAÇÃO
-  // ----------------------------------------------------------
+  // ==========================================================
+  // DOMÍNIO SEM FINALIZAÇÃO
+  // ==========================================================
 
   const posseDominante =
-    Math.max(posseCasa, posseFora) >= 65;
+    Math.max(
+      posseCasa,
+      posseFora
+    ) >= 65;
 
   const poucaFinalizacao =
-    chutes <= 15 || dados.chutesNoAlvo <= 3;
+    totalChutes <= 15 ||
+    totalAlvo <= 3;
 
   if (
     posseDominante &&
@@ -475,13 +594,16 @@ function analisarPressao(dados, jogo) {
     );
   }
 
-  // ----------------------------------------------------------
-  // 7. PLACAR
-  // ----------------------------------------------------------
+  // ==========================================================
+  // PLACAR
+  // ==========================================================
 
   const diferenca =
-    Math.abs(golsCasa - golsFora);
+    Math.abs(
+      golsCasa - golsFora
+    );
 
+  // 3+ gols de diferença
   if (diferenca >= 3) {
 
     bonus -= 12;
@@ -489,8 +611,10 @@ function analisarPressao(dados, jogo) {
     motivos.push(
       "🧊 placar de 3+ gols reduz pressão"
     );
+  }
 
-  } else if (diferenca === 2) {
+  // 2 gols de diferença
+  else if (diferenca === 2) {
 
     const perdedorCasaPressiona =
       golsCasa < golsFora &&
@@ -510,7 +634,7 @@ function analisarPressao(dados, jogo) {
       bonus += 4;
 
       motivos.push(
-        "🔥 perdedor reagindo com pressão"
+        "🔥 perdedor reagindo"
       );
 
     } else {
@@ -530,134 +654,175 @@ function analisarPressao(dados, jogo) {
 }
 
 // ============================================================
-// SCORE
+// SCORE V23
 // ============================================================
 
 function calcularScore(dados, jogo) {
 
   let score = 0;
+
   const motivos = [];
 
-  const {
-    escanteios,
-    chutes,
-    chutesNoAlvo
-  } = dados;
+  const escanteios =
+    dados.escanteios;
 
-  // ----------------------------------------------------------
+  const chutes =
+    dados.chutes;
+
+  const chutesNoAlvo =
+    dados.chutesNoAlvo;
+
+  // ==========================================================
   // ESCANTEIOS
-  // ----------------------------------------------------------
+  // ==========================================================
 
   if (escanteios <= 2) {
 
     score += 20;
 
-    motivos.push("🚩 poucos cantos");
+    motivos.push(
+      "🚩 poucos cantos"
+    );
 
   } else if (escanteios <= 3) {
 
     score += 16;
 
-    motivos.push("🚩 cantos baixos");
+    motivos.push(
+      "🚩 cantos baixos"
+    );
+
+  } else if (escanteios <= 4) {
+
+    score += 12;
+
+    motivos.push(
+      "🚩 até 4 cantos"
+    );
 
   } else if (escanteios <= 5) {
 
-    score += 10;
+    score += 8;
 
-    motivos.push("🚩 até 5 cantos");
+    motivos.push(
+      "🚩 5 cantos"
+    );
 
   } else {
 
     return {
       score: 0,
-      motivos: ["muitos cantos"]
+      motivos: [
+        "muitos cantos"
+      ]
     };
   }
 
-  // ----------------------------------------------------------
+  // ==========================================================
   // CHUTES
-  // ----------------------------------------------------------
+  // ==========================================================
 
   if (chutes >= 20) {
 
     score += 25;
 
-    motivos.push("🎯 20+ chutes");
+    motivos.push(
+      "🎯 20+ chutes"
+    );
 
   } else if (chutes >= 17) {
 
     score += 21;
 
-    motivos.push("🎯 17+ chutes");
+    motivos.push(
+      "🎯 17+ chutes"
+    );
 
   } else if (chutes >= 14) {
 
     score += 16;
 
-    motivos.push("🎯 14+ chutes");
+    motivos.push(
+      "🎯 14+ chutes"
+    );
 
   } else if (chutes >= 12) {
 
     score += 12;
 
-    motivos.push("🎯 12+ chutes");
+    motivos.push(
+      "🎯 12+ chutes"
+    );
 
   } else {
 
     return {
       score: 0,
-      motivos: ["poucos chutes"]
+      motivos: [
+        "poucos chutes"
+      ]
     };
   }
 
-  // ----------------------------------------------------------
-  // CHUTES NO ALVO
-  // ----------------------------------------------------------
+  // ==========================================================
+  // NO ALVO
+  // ==========================================================
 
   if (chutesNoAlvo >= 8) {
 
     score += 20;
 
-    motivos.push("🥅 8+ no alvo");
+    motivos.push(
+      "🥅 8+ no alvo"
+    );
 
   } else if (chutesNoAlvo >= 6) {
 
     score += 16;
 
-    motivos.push("🥅 6+ no alvo");
+    motivos.push(
+      "🥅 6+ no alvo"
+    );
 
   } else if (chutesNoAlvo >= 4) {
 
-    score += 10;
+    score += 12;
 
-    motivos.push("🥅 4+ no alvo");
+    motivos.push(
+      "🥅 4+ no alvo"
+    );
 
   } else {
 
     score -= 5;
 
-    motivos.push("⚠️ poucos no alvo");
+    motivos.push(
+      "⚠️ poucos no alvo"
+    );
   }
 
-  // ----------------------------------------------------------
-  // VOLUME INDIVIDUAL
-  // ----------------------------------------------------------
+  // ==========================================================
+  // FORTE VOLUME DE UM LADO
+  // ==========================================================
 
-  if (
+  const maiorVolume =
     Math.max(
       dados.chutesCasa,
       dados.chutesFora
-    ) >= 10
-  ) {
+    );
 
-    score += 10;
+  if (maiorVolume >= 9) {
 
-    motivos.push("💥 forte volume");
+    score += 12;
+
+    motivos.push(
+      "💥 9+ chutes de um lado"
+    );
   }
 
-  // ----------------------------------------------------------
+  // ==========================================================
   // ATAQUES PERIGOSOS
-  // ----------------------------------------------------------
+  // ==========================================================
 
   const ataquesTotal =
     dados.ataquesPerigososCasa +
@@ -672,9 +837,9 @@ function calcularScore(dados, jogo) {
     );
   }
 
-  // ----------------------------------------------------------
+  // ==========================================================
   // POSSE
-  // ----------------------------------------------------------
+  // ==========================================================
 
   if (
     Math.max(
@@ -690,20 +855,23 @@ function calcularScore(dados, jogo) {
     );
   }
 
-  // ----------------------------------------------------------
+  // ==========================================================
   // EMPATE
-  // ----------------------------------------------------------
+  // ==========================================================
 
   const golsCasa =
-    numero(jogo.homeScore?.current);
+    numero(
+      jogo.homeScore?.current
+    );
 
   const golsFora =
-    numero(jogo.awayScore?.current);
+    numero(
+      jogo.awayScore?.current
+    );
 
-  const diferenca =
-    Math.abs(golsCasa - golsFora);
-
-  if (diferenca === 0) {
+  if (
+    golsCasa === golsFora
+  ) {
 
     score += 5;
 
@@ -712,16 +880,25 @@ function calcularScore(dados, jogo) {
     );
   }
 
-  // ----------------------------------------------------------
+  // ==========================================================
   // PRESSÃO
-  // ----------------------------------------------------------
+  // ==========================================================
 
   const pressao =
-    analisarPressao(dados, jogo);
+    analisarPressao(
+      dados,
+      jogo
+    );
 
   score += pressao.bonus;
 
-  motivos.push(...pressao.motivos);
+  motivos.push(
+    ...pressao.motivos
+  );
+
+  // ==========================================================
+  // LIMITAR
+  // ==========================================================
 
   score =
     Math.max(
@@ -751,7 +928,7 @@ function classificacao(score) {
     return "🟢 SINAL FORTE";
 
   if (score >= 65)
-    return "🟡 OBSERVAÇÃO";
+    return "🟡 SINAL ATIVADO";
 
   return "⚪ FRACO";
 }
@@ -762,11 +939,13 @@ function classificacao(score) {
 
 async function analisarJogo(jogo) {
 
-  if (!jogo?.id) return;
+  if (!jogo?.id)
+    return;
 
   if (
     JOGOS_JA_AVISADOS.has(jogo.id)
-  ) return;
+  )
+    return;
 
   TOTAL_ANALISADOS++;
 
@@ -789,19 +968,26 @@ async function analisarJogo(jogo) {
             p.period === "ALL"
         );
 
-    if (!periodo) return;
-
-    const dados =
-      extrairEstatisticas(periodo);
-
-    // --------------------------------------------------------
-    // FILTRO PRINCIPAL
-    // --------------------------------------------------------
-
-    if (dados.escanteios > 5)
+    if (!periodo)
       return;
 
-    if (dados.chutes < 12)
+    const dados =
+      extrairEstatisticas(
+        periodo
+      );
+
+    // ========================================================
+    // FILTRO PRINCIPAL
+    // ========================================================
+
+    if (
+      dados.escanteios > 5
+    )
+      return;
+
+    if (
+      dados.chutes < 12
+    )
       return;
 
     TOTAL_CANDIDATOS++;
@@ -825,10 +1011,15 @@ async function analisarJogo(jogo) {
       resultado.motivos.join(" | ")
     );
 
+    // ========================================================
+    // SCORE MÍNIMO
+    // ========================================================
+
     if (
       resultado.score <
       SCORE_MINIMO
-    ) return;
+    )
+      return;
 
     const casa =
       textoSeguro(
@@ -850,11 +1041,8 @@ async function analisarJogo(jogo) {
         jogo.awayScore?.current
       );
 
-    const motivosTexto =
-      resultado.motivos.join("\n");
-
     const mensagem =
-`🚨 *ELITE RADAR V22 — SINAL AO VIVO* 🚨
+`🚨 *ELITE RADAR V23 — SINAL ATIVADO* 🚨
 
 ⚽ *${casa} ${golsCasa} x ${golsFora} ${fora}*
 
@@ -867,13 +1055,15 @@ async function analisarJogo(jogo) {
 🥅 No alvo: *${dados.chutesNoAlvo}*
 
 🏠 ${casa}: ${dados.chutesCasa} chutes | ${dados.alvoCasa} no alvo
+
 ✈️ ${fora}: ${dados.chutesFora} chutes | ${dados.alvoFora} no alvo
 
-📈 *ANÁLISE DE PRESSÃO*
+📈 *PRESSÃO*
 
-${motivosTexto}
+${resultado.motivos.join("\n")}
 
 ⭐ *SCORE: ${resultado.score}/100*
+
 ${classificacao(resultado.score)}
 
 🎯 *OVER 4.5 ESCANTEIOS — 2º TEMPO*
@@ -914,7 +1104,7 @@ ${classificacao(resultado.score)}
 }
 
 // ============================================================
-// BUSCAR JOGOS
+// BUSCAR JOGOS AO VIVO
 // ============================================================
 
 async function verificarJogosAoVivo() {
@@ -937,7 +1127,7 @@ async function verificarJogosAoVivo() {
     );
 
   console.log(
-    `\n[${ULTIMO_CHECK}] V22 buscando jogos...`
+    `\n[${ULTIMO_CHECK}] V23 buscando jogos...`
   );
 
   try {
@@ -1007,7 +1197,10 @@ async function verificarRelatorioDiario() {
   const diaAtual =
     `${agora.getFullYear()}-${agora.getMonth() + 1}-${agora.getDate()}`;
 
-  // Reset automático no novo dia
+  // ----------------------------------------------------------
+  // NOVO DIA
+  // ----------------------------------------------------------
+
   if (
     DIA_RELATORIO !== diaAtual
   ) {
@@ -1019,7 +1212,10 @@ async function verificarRelatorioDiario() {
       diaAtual;
   }
 
-  // Envia entre 23:00 e 23:04
+  // ----------------------------------------------------------
+  // 23:00 ATÉ 23:04
+  // ----------------------------------------------------------
+
   if (
     hora === 23 &&
     minutos >= 0 &&
@@ -1028,31 +1224,41 @@ async function verificarRelatorioDiario() {
   ) {
 
     const mensagem =
-`📊 *ELITE RADAR V22 — RELATÓRIO DIÁRIO*
+`📊 *ELITE RADAR V23 — RELATÓRIO DIÁRIO*
 
 📅 ${agora.toLocaleDateString("pt-BR")}
 
-🔎 Jogos analisados: *${TOTAL_ANALISADOS}*
+🔎 Jogos analisados:
+*${TOTAL_ANALISADOS}*
 
-🎯 Candidatos encontrados: *${TOTAL_CANDIDATOS}*
+🎯 Candidatos:
+*${TOTAL_CANDIDATOS}*
 
-🚨 Sinais enviados: *${TOTAL_ENVIADOS}*
+🚨 Sinais enviados:
+*${TOTAL_ENVIADOS}*
 
-📌 Score mínimo: *${SCORE_MINIMO}*
+⭐ Score mínimo:
+*${SCORE_MINIMO}*
 
-🚩 Estratégia:
-*Over 4.5 escanteios — 2º tempo*
+🎯 Estratégia:
+*OVER 4.5 ESCANTEIOS — 2º TEMPO*
 
-🔥 Filtro:
-*Pressão inteligente + volume de chutes + poucos cantos*
+🔥 Pressão:
+*9+ chutes + 4+ no alvo + vantagem de 4+*
+
+🚩 Máximo de escanteios:
+*5*
+
+⏱️ Varredura:
+*a cada 20 minutos*
 
 🛡️ Proteções:
-*Placar + domínio sem finalizações + anti-spam*
+*placar + domínio sem finalizações + anti-spam*
 
 ⚠️ Último erro:
 ${textoSeguro(ULTIMO_ERRO)}
 
-🕚 Relatório automático das 23h BRT.`;
+🕚 Relatório automático — 23h BRT`;
 
     const ok =
       await sendTelegram(
@@ -1065,7 +1271,7 @@ ${textoSeguro(ULTIMO_ERRO)}
         true;
 
       console.log(
-        "📊 RELATÓRIO DAS 23H ENVIADO"
+        "📊 RELATÓRIO 23H ENVIADO"
       );
     }
   }
@@ -1075,24 +1281,27 @@ ${textoSeguro(ULTIMO_ERRO)}
 // ROTINAS
 // ============================================================
 
-// Radar a cada 20 minutos
+// Radar
 setInterval(
   verificarJogosAoVivo,
-  INTERVALO_MINUTOS * 60 * 1000
+  INTERVALO_MINUTOS *
+  60 *
+  1000
 );
 
-// Verifica o relógio a cada 30 segundos
+// Relógio do relatório
 setInterval(
   verificarRelatorioDiario,
   30 * 1000
 );
 
+// Primeira execução
 verificarJogosAoVivo();
 
 verificarRelatorioDiario();
 
 // ============================================================
-// ROTAS
+// STATUS
 // ============================================================
 
 app.get("/", (req, res) => {
@@ -1100,7 +1309,7 @@ app.get("/", (req, res) => {
   res.json({
 
     status:
-      "ELITE RADAR V22 ONLINE",
+      "ELITE RADAR V23 ONLINE",
 
     score_minimo:
       SCORE_MINIMO,
@@ -1126,6 +1335,9 @@ app.get("/", (req, res) => {
     intervalo:
       "20 minutos",
 
+    pressao:
+      "9+ chutes + 4+ no alvo + 4+ vantagem",
+
     relatorio:
       "Todos os dias às 23h BRT",
 
@@ -1147,24 +1359,32 @@ app.get(
 
     const ok =
       await sendTelegram(
-`✅ *V22 TESTE OK*
+`✅ *ELITE RADAR V23 — TESTE OK*
 
 🔥 Pressão bilateral
-🏠 Pressão mandante
-✈️ Pressão visitante
-💥 Volume ofensivo
-⚠️ Domínio sem finalizações
-🧊 Placar inteligente
+🏠 Pressão forte mandante
+✈️ Pressão forte visitante
 
-⭐ Score mínimo: ${SCORE_MINIMO}
+🎯 Regra principal:
+9+ chutes
+4+ no alvo
+4+ vantagem
 
-📊 Relatório diário: 23h BRT
+🚩 Até 5 escanteios
+
+⭐ Score mínimo:
+${SCORE_MINIMO}
+
+📊 Relatório diário:
+23h BRT
 
 🕐 ${ULTIMO_CHECK}`
       );
 
     res.json({
+
       ok,
+
       total_enviados:
         TOTAL_ENVIADOS
     });
@@ -1185,8 +1405,11 @@ app.get(
     JOGOS_JA_AVISADOS.clear();
 
     res.json({
+
       ok: true,
+
       antes,
+
       depois: 0
     });
   }
@@ -1198,8 +1421,11 @@ app.get(
 
 app.listen(
   PORT,
-  () =>
+  () => {
+
     console.log(
-      `🚀 ELITE RADAR V22 RODANDO NA PORTA ${PORT}`
-    )
+      `🚀 ELITE RADAR V23 RODANDO NA PORTA ${PORT}`
+    );
+
+  }
 );
