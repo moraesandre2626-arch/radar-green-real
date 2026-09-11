@@ -1,14 +1,20 @@
 // ============================================================
-// HIGHLIGHTLY TESTE - ESTATÍSTICAS AO VIVO
+// HIGHLIGHTLY TESTE - ELITE RADAR
 // ============================================================
-// OBJETIVO:
-// 1. Buscar partidas em andamento
-// 2. Pegar o matchId
-// 3. Consultar /statistics/{matchId}
-// 4. Mostrar TODAS as estatísticas recebidas no log do Render
+// TESTA:
+// - partidas
+// - jogos ao vivo
+// - estatísticas
+// - chutes
+// - chutes no alvo
+// - posse
+// - escanteios
+// - ataques
+// - xG
 //
-// NÃO É A V24 AINDA.
-// É SOMENTE UM TESTE DA API.
+// IMPORTANTE:
+// A chave fica no Render:
+// HIGHLIGHTLY_API_KEY
 // ============================================================
 
 const express = require("express");
@@ -18,34 +24,15 @@ const app = express();
 app.use(express.json());
 
 const PORT = process.env.PORT || 10000;
-
-// ============================================================
-// CONFIGURAÇÃO
-// ============================================================
-
 const API_KEY = process.env.HIGHLIGHTLY_API_KEY;
 
 const BASE_URL = "https://soccer.highlightly.net";
 
-const INTERVALO = 5 * 60 * 1000; // 5 minutos
 const TIMEOUT = 15000;
+const INTERVALO = 5 * 60 * 1000;
 
 // ============================================================
-// VERIFICAÇÃO DA CHAVE
-// ============================================================
-
-if (!API_KEY) {
-    console.error("");
-    console.error("=================================================");
-    console.error("ERRO: HIGHLIGHTLY_API_KEY NÃO CONFIGURADA");
-    console.error("=================================================");
-    console.error("No Render, crie:");
-    console.error("HIGHLIGHTLY_API_KEY = SUA_CHAVE");
-    console.error("=================================================");
-}
-
-// ============================================================
-// CLIENTE HTTP
+// CLIENTE
 // ============================================================
 
 const api = axios.create({
@@ -57,59 +44,48 @@ const api = axios.create({
 });
 
 // ============================================================
-// FUNÇÃO GENÉRICA PARA API
+// TESTE DA API
 // ============================================================
 
-async function requestHighlightly(url, params = {}) {
+async function requisicao(endpoint, params = {}) {
 
     try {
 
-        const response = await api.get(url, {
+        const resposta = await api.get(endpoint, {
             params
         });
 
+        console.log("");
         console.log(
-            `📡 API ${url} -> HTTP ${response.status}`
+            `📡 ${endpoint} -> HTTP ${resposta.status}`
         );
 
-        console.log(
-            "📊 Requests restantes:",
-            response.headers["x-ratelimit-requests-remaining"] ?? "não informado"
-        );
+        return resposta.data;
 
-        return response.data;
-
-    } catch (error) {
-
-        const status = error.response?.status;
+    } catch (erro) {
 
         console.error("");
         console.error("❌ ERRO HIGHLIGHTLY");
-        console.error("Endpoint:", url);
-        console.error("HTTP:", status || "sem resposta");
+        console.error("Endpoint:", endpoint);
+        console.error(
+            "HTTP:",
+            erro.response?.status || "sem resposta"
+        );
 
-        if (error.response?.data) {
+        if (erro.response?.data) {
             console.error(
                 "Resposta:",
-                JSON.stringify(error.response.data, null, 2)
+                JSON.stringify(
+                    erro.response.data,
+                    null,
+                    2
+                )
             );
         } else {
             console.error(
                 "Mensagem:",
-                error.message
+                erro.message
             );
-        }
-
-        if (status === 401) {
-            console.error("🔴 API KEY inválida ou não autorizada.");
-        }
-
-        if (status === 403) {
-            console.error("🔴 Acesso proibido / plano / chave.");
-        }
-
-        if (status === 429) {
-            console.error("🟠 Limite de requisições atingido.");
         }
 
         return null;
@@ -117,31 +93,34 @@ async function requestHighlightly(url, params = {}) {
 }
 
 // ============================================================
-// BUSCAR PARTIDAS DE HOJE
+// BUSCAR PARTIDAS
 // ============================================================
 
-async function buscarJogosAoVivo() {
+async function buscarPartidas() {
 
     const agora = new Date();
 
     const ano = agora.getUTCFullYear();
-    const mes = String(agora.getUTCMonth() + 1).padStart(2, "0");
-    const dia = String(agora.getUTCDate()).padStart(2, "0");
+    const mes = String(
+        agora.getUTCMonth() + 1
+    ).padStart(2, "0");
+
+    const dia = String(
+        agora.getUTCDate()
+    ).padStart(2, "0");
 
     const data = `${ano}-${mes}-${dia}`;
 
     console.log("");
     console.log("=================================================");
     console.log("🔎 BUSCANDO PARTIDAS");
-    console.log("Data UTC:", data);
     console.log("=================================================");
+    console.log("📅 Data:", data);
 
-    const resultado = await requestHighlightly(
+    const resultado = await requisicao(
         "/matches",
         {
-            date: data,
-            timezone: "America/Sao_Paulo",
-            limit: 100
+            date: data
         }
     );
 
@@ -149,350 +128,432 @@ async function buscarJogosAoVivo() {
         return [];
     }
 
-    const jogos = Array.isArray(resultado)
-        ? resultado
-        : resultado.data || [];
+    // A API pode retornar array diretamente
+    // ou dentro de uma propriedade.
+
+    let partidas = [];
+
+    if (Array.isArray(resultado)) {
+        partidas = resultado;
+    } else if (Array.isArray(resultado.data)) {
+        partidas = resultado.data;
+    } else if (Array.isArray(resultado.matches)) {
+        partidas = resultado.matches;
+    }
 
     console.log(
-        `📋 Total de partidas retornadas: ${jogos.length}`
+        `📋 Partidas encontradas: ${partidas.length}`
     );
 
-    return jogos;
+    return partidas;
 }
 
 // ============================================================
-// VERIFICAR SE ESTÁ AO VIVO
+// IDENTIFICAR JOGO AO VIVO
 // ============================================================
 
-function jogoEstaAoVivo(jogo) {
+function estaAoVivo(jogo) {
 
-    const estado =
-        jogo?.state?.description ||
-        jogo?.status?.description ||
-        "";
+    const texto = JSON.stringify(jogo)
+        .toLowerCase();
 
-    const estadosAoVivo = [
-        "First half",
-        "Second half",
-        "Half time",
-        "Extra time",
-        "Break time",
-        "In progress"
+    const palavras = [
+        "live",
+        "in progress",
+        "first half",
+        "second half",
+        "half time",
+        "halftime",
+        "1h",
+        "2h"
     ];
 
-    return estadosAoVivo.includes(estado);
+    return palavras.some(
+        palavra => texto.includes(palavra)
+    );
 }
 
 // ============================================================
-// EXIBIR PARTIDA
+// NOME DOS TIMES
 // ============================================================
 
-function mostrarPartida(jogo) {
+function nomeTime(jogo, lado) {
 
-    const casa =
-        jogo?.homeTeam?.name ||
-        "Casa";
+    if (lado === "casa") {
 
-    const fora =
+        return (
+            jogo?.homeTeam?.name ||
+            jogo?.home?.name ||
+            jogo?.homeTeam?.shortName ||
+            "Casa"
+        );
+    }
+
+    return (
         jogo?.awayTeam?.name ||
-        "Fora";
+        jogo?.away?.name ||
+        jogo?.awayTeam?.shortName ||
+        "Fora"
+    );
+}
 
-    const estado =
-        jogo?.state?.description ||
-        "Desconhecido";
+// ============================================================
+// MOSTRAR JOGO
+// ============================================================
 
-    const minuto =
-        jogo?.state?.clock ??
-        "-";
-
-    const placar =
-        jogo?.state?.score?.current ||
-        "0 - 0";
+function mostrarJogo(jogo) {
 
     console.log("");
     console.log("-------------------------------------------------");
-    console.log(`⚽ ${casa} x ${fora}`);
-    console.log(`🆔 Match ID: ${jogo.id}`);
-    console.log(`⏱️ Estado: ${estado}`);
-    console.log(`⏱️ Minuto: ${minuto}`);
-    console.log(`📊 Placar: ${placar}`);
-    console.log(`🏆 Liga: ${jogo?.league?.name || "-"}`);
-    console.log("-------------------------------------------------");
+
+    console.log(
+        `⚽ ${nomeTime(jogo, "casa")} x ${nomeTime(jogo, "fora")}`
+    );
+
+    console.log(
+        "🆔 Match ID:",
+        jogo?.id || jogo?.matchId || "NÃO ENCONTRADO"
+    );
+
+    console.log(
+        "🏆 Liga:",
+        jogo?.league?.name ||
+        jogo?.competition?.name ||
+        "-"
+    );
+
+    console.log(
+        "⏱️ Estado:",
+        jogo?.state?.description ||
+        jogo?.status?.description ||
+        jogo?.status ||
+        "-"
+    );
+
+    console.log(
+        "-------------------------------------------------");
 }
 
 // ============================================================
 // BUSCAR ESTATÍSTICAS
 // ============================================================
 
-async function buscarEstatisticas(matchId, jogo) {
+async function buscarEstatisticas(matchId) {
 
     console.log("");
     console.log("=================================================");
-    console.log(`📊 ESTATÍSTICAS - MATCH ${matchId}`);
+    console.log(
+        `📊 ESTATÍSTICAS DO JOGO ${matchId}`
+    );
     console.log("=================================================");
 
-    const resultado = await requestHighlightly(
+    const resultado = await requisicao(
         `/statistics/${matchId}`
     );
 
     if (!resultado) {
-        console.log("⚠️ Nenhuma estatística retornada.");
-        return;
-    }
-
-    console.log("");
-    console.log("🔍 JSON BRUTO DAS ESTATÍSTICAS:");
-    console.log(
-        JSON.stringify(resultado, null, 2)
-    );
-
-    console.log("");
-    console.log("=================================================");
-    console.log("📈 RESUMO DAS ESTATÍSTICAS");
-    console.log("=================================================");
-
-    const lista = Array.isArray(resultado)
-        ? resultado
-        : resultado.data || [];
-
-    if (!Array.isArray(lista) || lista.length === 0) {
 
         console.log(
-            "⚠️ A API respondeu, mas não encontramos a lista esperada."
+            "⚠️ Nenhuma estatística recebida."
         );
 
         return;
     }
 
-    for (const equipe of lista) {
+    // ========================================================
+    // MOSTRAR JSON COMPLETO
+    // ========================================================
 
-        const nome =
-            equipe?.team?.name ||
-            "Equipe";
+    console.log("");
+    console.log("🔍 JSON BRUTO RECEBIDO:");
+    console.log(
+        JSON.stringify(
+            resultado,
+            null,
+            2
+        )
+    );
 
-        console.log("");
-        console.log(`🏳️ ${nome}`);
-        console.log("-----------------------------------------");
+    // ========================================================
+    // PROCURAR CAMPOS IMPORTANTES
+    // ========================================================
 
-        const stats =
-            equipe?.statistics || [];
-
-        if (!Array.isArray(stats) || stats.length === 0) {
-
-            console.log(
-                "Sem estatísticas para esta equipe."
-            );
-
-            continue;
-        }
-
-        for (const stat of stats) {
-
-            const nomeStat =
-                stat?.displayName ||
-                stat?.name ||
-                "Estatística";
-
-            const valor =
-                stat?.value ??
-                "-";
-
-            console.log(
-                `   ${nomeStat}: ${valor}`
-            );
-        }
-    }
+    const texto = JSON.stringify(
+        resultado
+    ).toLowerCase();
 
     console.log("");
     console.log("=================================================");
-    console.log("🎯 CAMPOS IMPORTANTES PARA A V24");
+    console.log("🎯 CAMPOS PARA A V24");
     console.log("=================================================");
 
-    const texto =
-        JSON.stringify(resultado).toLowerCase();
-
-    const procurar = [
-        "shots",
-        "shot",
-        "shots on target",
-        "possession",
-        "corners",
-        "corner",
-        "dangerous attacks",
-        "attacks",
-        "blocked",
-        "xg",
-        "expected goals"
+    const campos = [
+        ["chutes", "shots"],
+        ["chutes no alvo", "shots on target"],
+        ["posse", "possession"],
+        ["escanteios", "corner"],
+        ["ataques", "attacks"],
+        ["ataques perigosos", "dangerous attacks"],
+        ["chutes bloqueados", "blocked"],
+        ["xG", "xg"],
+        ["expected goals", "expected goals"]
     ];
 
-    for (const campo of procurar) {
+    for (const [nome, busca] of campos) {
 
-        const encontrado =
-            texto.includes(campo.toLowerCase());
+        const encontrou =
+            texto.includes(busca);
 
         console.log(
-            `${encontrado ? "✅" : "❌"} ${campo}`
+            `${encontrou ? "✅" : "❌"} ${nome}`
+        );
+    }
+
+    // ========================================================
+    // MOSTRAR ESTRUTURA
+    // ========================================================
+
+    console.log("");
+    console.log("=================================================");
+    console.log("📦 ESTRUTURA RECEBIDA");
+    console.log("=================================================");
+
+    if (Array.isArray(resultado)) {
+
+        console.log(
+            "Tipo: ARRAY"
+        );
+
+        console.log(
+            "Quantidade:",
+            resultado.length
+        );
+
+    } else {
+
+        console.log(
+            "Tipo: OBJETO"
+        );
+
+        console.log(
+            "Chaves:",
+            Object.keys(resultado)
         );
     }
 }
 
 // ============================================================
-// EXECUÇÃO PRINCIPAL
+// EXECUTAR TESTE
 // ============================================================
 
-let executando = false;
+let rodando = false;
 
-async function analisarJogos() {
+async function executarTeste() {
 
-    if (executando) {
+    if (rodando) {
 
         console.log(
-            "⏳ Análise anterior ainda está rodando."
+            "⏳ Teste anterior ainda está executando."
         );
 
         return;
     }
 
-    executando = true;
+    rodando = true;
 
     try {
 
         console.log("");
         console.log("");
         console.log("#################################################");
-        console.log("# HIGHLIGHTLY TESTE - ELITE RADAR");
+        console.log("# 🚀 HIGHLIGHTLY TESTE - ELITE RADAR");
         console.log("#################################################");
+
         console.log(
             "🕒",
-            new Date().toLocaleString("pt-BR", {
-                timeZone: "America/Sao_Paulo"
-            })
+            new Date().toLocaleString(
+                "pt-BR",
+                {
+                    timeZone: "America/Sao_Paulo"
+                }
+            )
         );
+
+        // ====================================================
+        // VERIFICAR CHAVE
+        // ====================================================
 
         if (!API_KEY) {
 
+            console.error("");
             console.error(
-                "❌ Configure HIGHLIGHTLY_API_KEY no Render."
+                "❌ HIGHLIGHTLY_API_KEY NÃO CONFIGURADA"
+            );
+
+            console.error(
+                "No Render crie a Environment Variable:"
+            );
+
+            console.error(
+                "HIGHLIGHTLY_API_KEY"
             );
 
             return;
         }
 
-        const jogos =
-            await buscarJogosAoVivo();
+        console.log(
+            "🔑 API Key configurada: SIM"
+        );
+
+        // ====================================================
+        // BUSCAR JOGOS
+        // ====================================================
+
+        const partidas =
+            await buscarPartidas();
+
+        if (!partidas.length) {
+
+            console.log("");
+            console.log(
+                "ℹ️ Nenhuma partida encontrada."
+            );
+
+            return;
+        }
+
+        // ====================================================
+        // FILTRAR AO VIVO
+        // ====================================================
 
         const aoVivo =
-            jogos.filter(jogoEstaAoVivo);
+            partidas.filter(
+                estaAoVivo
+            );
 
         console.log("");
         console.log(
-            `🔥 Jogos ao vivo encontrados: ${aoVivo.length}`
+            `🔥 Jogos aparentemente ao vivo: ${aoVivo.length}`
         );
 
-        if (aoVivo.length === 0) {
-
-            console.log(
-                "ℹ️ Nenhuma partida ao vivo encontrada agora."
-            );
-
-            return;
-        }
-
         // ====================================================
-        // TESTAR NO MÁXIMO 3 JOGOS
-        // PARA NÃO GASTAR A COTA DESNECESSARIAMENTE
+        // SE NÃO DETECTAR AO VIVO,
+        // MOSTRAR ALGUNS JOGOS PARA ENTENDER A ESTRUTURA
         // ====================================================
 
-        const jogosTeste =
-            aoVivo.slice(0, 3);
+        const jogosParaTestar =
+            aoVivo.length > 0
+                ? aoVivo.slice(0, 3)
+                : partidas.slice(0, 3);
 
         console.log(
-            `🧪 Testando ${jogosTeste.length} partida(s).`
+            `🧪 Jogos sendo testados: ${jogosParaTestar.length}`
         );
 
-        for (const jogo of jogosTeste) {
+        // ====================================================
+        // CONSULTAR ESTATÍSTICAS
+        // ====================================================
 
-            mostrarPartida(jogo);
+        for (
+            const jogo of jogosParaTestar
+        ) {
 
-            if (!jogo.id) {
+            mostrarJogo(jogo);
+
+            const matchId =
+                jogo?.id ||
+                jogo?.matchId;
+
+            if (!matchId) {
 
                 console.log(
-                    "⚠️ Partida sem matchId."
+                    "❌ Match ID não encontrado."
                 );
 
                 continue;
             }
 
             await buscarEstatisticas(
-                jogo.id,
-                jogo
+                matchId
             );
         }
 
-    } catch (error) {
+    } catch (erro) {
+
+        console.error("");
+        console.error(
+            "❌ ERRO GERAL:"
+        );
 
         console.error(
-            "❌ ERRO GERAL:",
-            error.message
+            erro.message
         );
 
     } finally {
 
-        executando = false;
+        rodando = false;
     }
 }
 
 // ============================================================
-// ROTAS DO SERVIDOR
+// ROTAS
 // ============================================================
 
 app.get("/", (req, res) => {
 
     res.json({
         status: "online",
-        projeto: "Highlightly Teste",
-        api: "Highlightly Football",
-        objetivo: "Testar estatísticas ao vivo para Elite Radar V24",
+        api: "Highlightly",
+        projeto: "Elite Radar Teste",
         chaveConfigurada: !!API_KEY
     });
 });
 
 app.get("/teste", async (req, res) => {
 
-    await analisarJogos();
+    executarTeste();
 
     res.json({
         ok: true,
-        mensagem: "Teste executado. Veja os logs do Render."
+        mensagem:
+            "Teste iniciado. Veja os logs do Render."
     });
 });
 
 // ============================================================
-// INICIAR SERVIDOR
+// SERVIDOR
 // ============================================================
 
-app.listen(PORT, () => {
+app.listen(
+    PORT,
+    () => {
 
-    console.log("");
-    console.log("=================================================");
-    console.log("🚀 HIGHLIGHTLY TESTE ONLINE");
-    console.log("=================================================");
-    console.log(`🌐 Porta: ${PORT}`);
-    console.log(
-        `🔑 API Key configurada: ${API_KEY ? "SIM" : "NÃO"}`
-    );
-    console.log("");
-    console.log("Endpoints:");
-    console.log("GET /");
-    console.log("GET /teste");
-    console.log("");
-    console.log("O teste automático começa agora.");
-    console.log("=================================================");
+        console.log("");
+        console.log("=================================================");
+        console.log("🚀 HIGHLIGHTLY TESTE ONLINE");
+        console.log("=================================================");
+        console.log(
+            `🌐 PORTA: ${PORT}`
+        );
+        console.log(
+            `🔑 API KEY: ${API_KEY ? "CONFIGURADA" : "NÃO CONFIGURADA"}`
+        );
+        console.log("");
+        console.log(
+            "🌐 Endpoint: /"
+        );
+        console.log(
+            "🧪 Teste manual: /teste"
+        );
+        console.log("=================================================");
 
-    analisarJogos();
+        // Primeiro teste imediatamente
+        executarTeste();
 
-    setInterval(
-        analisarJogos,
-        INTERVALO
-    );
-});
+        // Repetir a cada 5 minutos
+        setInterval(
+            executarTeste,
+            INTERVALO
+        );
+    }
+);
