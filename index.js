@@ -25,12 +25,19 @@
 // SCORE MÍNIMO: 65
 // VARREDURA: 20 MINUTOS
 // RELATÓRIO: 23H BRT
+//
+// EFO_IDS:
+// Chave de análise configurada no Render.
+// A chave é lida por process.env.EFO_IDS
+// e NÃO fica exposta no código.
+//
 // ============================================================
 
 const express = require("express");
 const axios = require("axios");
 
 const app = express();
+
 app.use(express.json());
 
 const PORT = process.env.PORT || 10000;
@@ -53,22 +60,54 @@ const CHAT_ID = (
 ).trim();
 
 // ============================================================
+// CHAVE DE ANÁLISE
+// ============================================================
+
+const EFO_IDS = (
+  process.env.EFO_IDS ||
+  ""
+).trim();
+
+// ============================================================
 // CONFIGURAÇÕES
 // ============================================================
 
 const SCORE_MINIMO = 65;
+
 const INTERVALO_MINUTOS = 20;
-const DELAY_SOFASCORE = 4000;
+
+const DELAY_SOFASCORE = 6000;
+
+const TIMEOUT = 12000;
+
+const TIMEOUT_PROXY = 18000;
+
+const CACHE_TTL = 30000;
+
+const COOLDOWN_403 = 120000;
 
 let ULTIMO_CHECK = "Nunca";
+
 let TOTAL_ENVIADOS = 0;
+
 let TOTAL_ANALISADOS = 0;
+
 let TOTAL_CANDIDATOS = 0;
+
+let TOTAL_ERROS_403 = 0;
+
 let ULTIMO_ERRO = "Nenhum";
+
+let ULTIMO_STATUS_API = "Nunca";
+
+let BLOQUEADO_ATE = 0;
 
 let JOGOS_JA_AVISADOS = new Set();
 
+let CACHE_STATS = new Map();
+
 let RELATORIO_ENVIADO_HOJE = false;
+
 let DIA_RELATORIO = "";
 
 // ============================================================
@@ -76,15 +115,29 @@ let DIA_RELATORIO = "";
 // ============================================================
 
 function dormir(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
+
+  return new Promise(resolve => {
+    setTimeout(resolve, ms);
+  });
+
 }
+
+// ============================================================
+// NÚMERO SEGURO
+// ============================================================
 
 function numero(v) {
 
-  if (v == null) return 0;
+  if (v == null) {
+    return 0;
+  }
 
   if (typeof v === "number") {
-    return isFinite(v) ? v : 0;
+
+    return isFinite(v)
+      ? v
+      : 0;
+
   }
 
   const n = parseFloat(
@@ -93,13 +146,21 @@ function numero(v) {
       .replace(",", ".")
   );
 
-  return isFinite(n) ? n : 0;
+  return isFinite(n)
+    ? n
+    : 0;
+
 }
+
+// ============================================================
+// TEXTO SEGURO
+// ============================================================
 
 function textoSeguro(v) {
 
   return String(v || "")
     .replace(/[*_`\[\]]/g, "");
+
 }
 
 // ============================================================
@@ -109,38 +170,68 @@ function textoSeguro(v) {
 function agoraBrasil() {
 
   return new Date(
-    new Date().toLocaleString("en-US", {
-      timeZone: "America/Sao_Paulo"
-    })
+    new Date().toLocaleString(
+      "en-US",
+      {
+        timeZone:
+          "America/Sao_Paulo"
+      }
+    )
   );
+
 }
+
+// ============================================================
+// PODE RODAR
+// ============================================================
 
 function podeRodarAgora() {
 
-  const agora = agoraBrasil();
+  const agora =
+    agoraBrasil();
 
-  const h = agora.getHours();
-  const d = agora.getDay();
+  const h =
+    agora.getHours();
+
+  const d =
+    agora.getDay();
 
   const fimDeSemana =
-    d === 0 || d === 6;
+    d === 0 ||
+    d === 6;
 
   if (fimDeSemana) {
-    return h >= 8 && h < 24;
+
+    return (
+      h >= 8 &&
+      h < 24
+    );
+
   }
 
-  return h >= 12 && h < 24;
+  return (
+    h >= 12 &&
+    h < 24
+  );
+
 }
+
+// ============================================================
+// HORÁRIO TEXTO
+// ============================================================
 
 function horarioTexto() {
 
-  const d = agoraBrasil().getDay();
+  const d =
+    agoraBrasil().getDay();
 
   return (
-    d === 0 || d === 6
+    d === 0 ||
+    d === 6
   )
     ? "Sab-Dom 08h-00h BRT"
     : "Seg-Sex 12h-00h BRT";
+
 }
 
 // ============================================================
@@ -163,12 +254,18 @@ async function sendTelegram(texto) {
     await axios.post(
       `https://api.telegram.org/bot${TOKEN}/sendMessage`,
       {
-        chat_id: CHAT_ID,
-        text: texto,
-        parse_mode: "Markdown"
+        chat_id:
+          CHAT_ID,
+
+        text:
+          texto,
+
+        parse_mode:
+          "Markdown"
       },
       {
-        timeout: 10000
+        timeout:
+          10000
       }
     );
 
@@ -180,15 +277,17 @@ async function sendTelegram(texto) {
 
     console.log(
       "ERRO TELEGRAM:",
-      e.response?.data || e.message
+      e.response?.data ||
+      e.message
     );
 
     return false;
   }
+
 }
 
 // ============================================================
-// SOFASCORE
+// HEADERS SOFASCORE
 // ============================================================
 
 const HEADERS = {
@@ -197,16 +296,104 @@ const HEADERS = {
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36",
 
   "Accept":
-    "application/json",
+    "application/json,text/plain,*/*",
 
   "Referer":
     "https://www.sofascore.com/",
 
   "Origin":
-    "https://www.sofascore.com"
+    "https://www.sofascore.com",
+
+  "Connection":
+    "keep-alive"
 };
 
+// ============================================================
+// CACHE
+// ============================================================
+
+function cacheGet(url) {
+
+  const item =
+    CACHE_STATS.get(url);
+
+  if (!item) {
+    return null;
+  }
+
+  if (
+    Date.now() -
+    item.timestamp >
+    CACHE_TTL
+  ) {
+
+    CACHE_STATS.delete(url);
+
+    return null;
+  }
+
+  return item.data;
+
+}
+
+function cacheSet(url, data) {
+
+  CACHE_STATS.set(
+    url,
+    {
+      timestamp:
+        Date.now(),
+
+      data
+    }
+  );
+
+}
+
+// ============================================================
+// GET SOFASCORE
+// ============================================================
+
 async function getSofascore(url) {
+
+  // ----------------------------------------------------------
+  // COOLDOWN GLOBAL
+  // ----------------------------------------------------------
+
+  if (
+    Date.now() <
+    BLOQUEADO_ATE
+  ) {
+
+    const segundos =
+      Math.ceil(
+        (
+          BLOQUEADO_ATE -
+          Date.now()
+        ) / 1000
+      );
+
+    throw new Error(
+      `SofaScore em cooldown por 403 (${segundos}s)`
+    );
+  }
+
+  // ----------------------------------------------------------
+  // CACHE
+  // ----------------------------------------------------------
+
+  const cached =
+    cacheGet(url);
+
+  if (cached) {
+
+    console.log(
+      "CACHE OK:",
+      url
+    );
+
+    return cached;
+  }
 
   // ----------------------------------------------------------
   // ACESSO DIRETO
@@ -218,27 +405,81 @@ async function getSofascore(url) {
       await axios.get(
         url,
         {
-          headers: HEADERS,
-          timeout: 12000
+          headers:
+            HEADERS,
+
+          timeout:
+            TIMEOUT,
+
+          validateStatus:
+            status =>
+              status >= 200 &&
+              status < 500
         }
       );
 
-    return resposta.data;
+    if (
+      resposta.status === 200
+    ) {
+
+      cacheSet(
+        url,
+        resposta.data
+      );
+
+      ULTIMO_STATUS_API =
+        "SofaScore direto OK";
+
+      return resposta.data;
+    }
+
+    if (
+      resposta.status === 403
+    ) {
+
+      TOTAL_ERROS_403++;
+
+      BLOQUEADO_ATE =
+        Date.now() +
+        COOLDOWN_403;
+
+      console.log(
+        "403 SofaScore direto."
+      );
+
+      console.log(
+        `Cooldown: ${COOLDOWN_403 / 1000}s`
+      );
+
+    } else {
+
+      console.log(
+        `SofaScore HTTP ${resposta.status}`
+      );
+    }
 
   } catch (e) {
 
-    if (e.response?.status !== 403) {
-      throw e;
-    }
-
     console.log(
-      "403 direto. Tentando proxy 1..."
+      "Erro acesso direto:",
+      e.message
     );
   }
 
   // ----------------------------------------------------------
   // PROXY 1
   // ----------------------------------------------------------
+
+  if (
+    Date.now() <
+    BLOQUEADO_ATE
+  ) {
+
+    console.log(
+      "Tentando proxy apesar do cooldown..."
+    );
+
+  }
 
   try {
 
@@ -249,22 +490,43 @@ async function getSofascore(url) {
       await axios.get(
         proxyUrl,
         {
-          timeout: 15000
+          timeout:
+            TIMEOUT_PROXY
         }
       );
+
+    let dados =
+      resposta.data;
+
+    if (
+      typeof dados ===
+      "string"
+    ) {
+
+      dados =
+        JSON.parse(dados);
+
+    }
+
+    cacheSet(
+      url,
+      dados
+    );
+
+    ULTIMO_STATUS_API =
+      "Proxy 1 OK";
 
     console.log(
       "Proxy 1 funcionou!"
     );
 
-    return typeof resposta.data === "string"
-      ? JSON.parse(resposta.data)
-      : resposta.data;
+    return dados;
 
   } catch (e) {
 
     console.log(
-      "Proxy 1 falhou. Tentando proxy 2..."
+      "Proxy 1 falhou:",
+      e.message
     );
   }
 
@@ -272,25 +534,62 @@ async function getSofascore(url) {
   // PROXY 2
   // ----------------------------------------------------------
 
-  const proxyUrl2 =
-    `https://corsproxy.io/?${encodeURIComponent(url)}`;
+  try {
 
-  const resposta3 =
-    await axios.get(
-      proxyUrl2,
-      {
-        headers: HEADERS,
-        timeout: 15000
-      }
+    const proxyUrl2 =
+      `https://corsproxy.io/?${encodeURIComponent(url)}`;
+
+    const resposta3 =
+      await axios.get(
+        proxyUrl2,
+        {
+          headers:
+            HEADERS,
+
+          timeout:
+            TIMEOUT_PROXY
+        }
+      );
+
+    let dados =
+      resposta3.data;
+
+    if (
+      typeof dados ===
+      "string"
+    ) {
+
+      dados =
+        JSON.parse(dados);
+
+    }
+
+    cacheSet(
+      url,
+      dados
     );
 
-  console.log(
-    "Proxy 2 funcionou!"
+    ULTIMO_STATUS_API =
+      "Proxy 2 OK";
+
+    console.log(
+      "Proxy 2 funcionou!"
+    );
+
+    return dados;
+
+  } catch (e) {
+
+    console.log(
+      "Proxy 2 falhou:",
+      e.message
+    );
+  }
+
+  throw new Error(
+    "SofaScore indisponível após acesso direto + proxies"
   );
 
-  return typeof resposta3.data === "string"
-    ? JSON.parse(resposta3.data)
-    : resposta3.data;
 }
 
 // ============================================================
@@ -301,55 +600,29 @@ function extrairEstatisticas(periodo) {
 
   const dados = {
 
-    // --------------------------------------------------------
-    // ESCANTEIOS
-    // SOMENTE INFORMATIVO
-    // --------------------------------------------------------
-
     escanteios: 0,
+
     cantosCasa: 0,
     cantosFora: 0,
 
-    // --------------------------------------------------------
-    // CHUTES
-    // --------------------------------------------------------
-
     chutes: 0,
+
     chutesCasa: 0,
     chutesFora: 0,
 
-    // --------------------------------------------------------
-    // NO ALVO
-    // --------------------------------------------------------
-
     chutesNoAlvo: 0,
+
     alvoCasa: 0,
     alvoFora: 0,
-
-    // --------------------------------------------------------
-    // BLOQUEADOS
-    // --------------------------------------------------------
 
     bloqueadosCasa: 0,
     bloqueadosFora: 0,
 
-    // --------------------------------------------------------
-    // DENTRO DA ÁREA
-    // --------------------------------------------------------
-
     dentroAreaCasa: 0,
     dentroAreaFora: 0,
 
-    // --------------------------------------------------------
-    // FORA DA ÁREA
-    // --------------------------------------------------------
-
     foraAreaCasa: 0,
     foraAreaFora: 0,
-
-    // --------------------------------------------------------
-    // ATAQUES
-    // --------------------------------------------------------
 
     ataquesPerigososCasa: 0,
     ataquesPerigososFora: 0,
@@ -357,42 +630,31 @@ function extrairEstatisticas(periodo) {
     ataquesCasa: 0,
     ataquesFora: 0,
 
-    // --------------------------------------------------------
-    // POSSE
-    // --------------------------------------------------------
-
     posseCasa: 0,
     posseFora: 0,
-
-    // --------------------------------------------------------
-    // xG
-    // --------------------------------------------------------
 
     xGCasa: 0,
     xGFora: 0,
 
-    // --------------------------------------------------------
-    // GRANDES CHANCES
-    // --------------------------------------------------------
-
     grandesChancesCasa: 0,
     grandesChancesFora: 0
+
   };
 
-  // ==========================================================
-  // PERCORRER ESTATÍSTICAS
-  // ==========================================================
-
   for (
-    const grupo of periodo?.groups || []
+    const grupo of
+    periodo?.groups || []
   ) {
 
     for (
-      const item of grupo.statisticsItems || []
+      const item of
+      grupo.statisticsItems || []
     ) {
 
       const nome =
-        String(item.name || "")
+        String(
+          item.name || ""
+        )
           .toLowerCase()
           .trim();
 
@@ -404,7 +666,6 @@ function extrairEstatisticas(periodo) {
 
       // ------------------------------------------------------
       // ESCANTEIOS
-      //
       // NÃO ENTRA NO SCORE
       // ------------------------------------------------------
 
@@ -416,8 +677,11 @@ function extrairEstatisticas(periodo) {
         dados.escanteios +=
           home + away;
 
-        dados.cantosCasa += home;
-        dados.cantosFora += away;
+        dados.cantosCasa +=
+          home;
+
+        dados.cantosFora +=
+          away;
 
         continue;
       }
@@ -429,11 +693,16 @@ function extrairEstatisticas(periodo) {
       if (
         nome === "expected goals" ||
         nome === "xg" ||
-        nome.includes("expected goals")
+        nome.includes(
+          "expected goals"
+        )
       ) {
 
-        dados.xGCasa = home;
-        dados.xGFora = away;
+        dados.xGCasa =
+          home;
+
+        dados.xGFora =
+          away;
 
         continue;
       }
@@ -445,14 +714,19 @@ function extrairEstatisticas(periodo) {
       if (
         nome === "total shots" ||
         nome === "shots" ||
-        nome.includes("total shots")
+        nome.includes(
+          "total shots"
+        )
       ) {
 
         dados.chutes +=
           home + away;
 
-        dados.chutesCasa += home;
-        dados.chutesFora += away;
+        dados.chutesCasa +=
+          home;
+
+        dados.chutesFora +=
+          away;
 
         continue;
       }
@@ -462,16 +736,23 @@ function extrairEstatisticas(periodo) {
       // ------------------------------------------------------
 
       if (
-        nome.includes("shots on target") ||
-        nome.includes("shots on goal") ||
+        nome.includes(
+          "shots on target"
+        ) ||
+        nome.includes(
+          "shots on goal"
+        ) ||
         nome === "on target"
       ) {
 
         dados.chutesNoAlvo +=
           home + away;
 
-        dados.alvoCasa += home;
-        dados.alvoFora += away;
+        dados.alvoCasa +=
+          home;
+
+        dados.alvoFora +=
+          away;
 
         continue;
       }
@@ -481,12 +762,19 @@ function extrairEstatisticas(periodo) {
       // ------------------------------------------------------
 
       if (
-        nome.includes("blocked shots") ||
-        nome.includes("shots blocked")
+        nome.includes(
+          "blocked shots"
+        ) ||
+        nome.includes(
+          "shots blocked"
+        )
       ) {
 
-        dados.bloqueadosCasa += home;
-        dados.bloqueadosFora += away;
+        dados.bloqueadosCasa +=
+          home;
+
+        dados.bloqueadosFora +=
+          away;
 
         continue;
       }
@@ -496,13 +784,22 @@ function extrairEstatisticas(periodo) {
       // ------------------------------------------------------
 
       if (
-        nome.includes("shots inside box") ||
-        nome.includes("shots inside penalty area") ||
-        nome.includes("inside box")
+        nome.includes(
+          "shots inside box"
+        ) ||
+        nome.includes(
+          "shots inside penalty area"
+        ) ||
+        nome.includes(
+          "inside box"
+        )
       ) {
 
-        dados.dentroAreaCasa += home;
-        dados.dentroAreaFora += away;
+        dados.dentroAreaCasa +=
+          home;
+
+        dados.dentroAreaFora +=
+          away;
 
         continue;
       }
@@ -512,12 +809,19 @@ function extrairEstatisticas(periodo) {
       // ------------------------------------------------------
 
       if (
-        nome.includes("shots outside box") ||
-        nome.includes("outside box")
+        nome.includes(
+          "shots outside box"
+        ) ||
+        nome.includes(
+          "outside box"
+        )
       ) {
 
-        dados.foraAreaCasa += home;
-        dados.foraAreaFora += away;
+        dados.foraAreaCasa +=
+          home;
+
+        dados.foraAreaFora +=
+          away;
 
         continue;
       }
@@ -527,11 +831,16 @@ function extrairEstatisticas(periodo) {
       // ------------------------------------------------------
 
       if (
-        nome.includes("dangerous attacks")
+        nome.includes(
+          "dangerous attacks"
+        )
       ) {
 
-        dados.ataquesPerigososCasa += home;
-        dados.ataquesPerigososFora += away;
+        dados.ataquesPerigososCasa +=
+          home;
+
+        dados.ataquesPerigososFora +=
+          away;
 
         continue;
       }
@@ -544,8 +853,11 @@ function extrairEstatisticas(periodo) {
         nome === "attacks"
       ) {
 
-        dados.ataquesCasa += home;
-        dados.ataquesFora += away;
+        dados.ataquesCasa +=
+          home;
+
+        dados.ataquesFora +=
+          away;
 
         continue;
       }
@@ -555,12 +867,17 @@ function extrairEstatisticas(periodo) {
       // ------------------------------------------------------
 
       if (
-        nome.includes("ball possession") ||
+        nome.includes(
+          "ball possession"
+        ) ||
         nome === "possession"
       ) {
 
-        dados.posseCasa = home;
-        dados.posseFora = away;
+        dados.posseCasa =
+          home;
+
+        dados.posseFora =
+          away;
 
         continue;
       }
@@ -570,25 +887,35 @@ function extrairEstatisticas(periodo) {
       // ------------------------------------------------------
 
       if (
-        nome.includes("big chances")
+        nome.includes(
+          "big chances"
+        )
       ) {
 
-        dados.grandesChancesCasa += home;
-        dados.grandesChancesFora += away;
+        dados.grandesChancesCasa +=
+          home;
+
+        dados.grandesChancesFora +=
+          away;
 
         continue;
       }
+
     }
   }
 
   return dados;
+
 }
 
 // ============================================================
 // ANALISAR PRESSÃO V24
 // ============================================================
 
-function analisarPressao(dados, jogo) {
+function analisarPressao(
+  dados,
+  jogo
+) {
 
   let bonus = 0;
 
@@ -600,58 +927,47 @@ function analisarPressao(dados, jogo) {
   const fora =
     dados.chutesFora;
 
-  const alvoCasa =
-    dados.alvoCasa;
-
-  const alvoFora =
-    dados.alvoFora;
-
   const totalChutes =
     dados.chutes;
 
   const totalAlvo =
     dados.chutesNoAlvo;
 
-  const posseCasa =
-    dados.posseCasa;
-
-  const posseFora =
-    dados.posseFora;
-
-  const ataquesCasa =
-    dados.ataquesPerigososCasa;
-
-  const ataquesFora =
-    dados.ataquesPerigososFora;
-
-  const xGCasa =
-    dados.xGCasa;
-
-  const xGFora =
-    dados.xGFora;
-
   const maiorChute =
-    Math.max(casa, fora);
+    Math.max(
+      casa,
+      fora
+    );
 
   const menorChute =
-    Math.min(casa, fora);
+    Math.min(
+      casa,
+      fora
+    );
 
   const diferencaChutes =
-    maiorChute - menorChute;
+    maiorChute -
+    menorChute;
 
   const maiorPosse =
-    Math.max(posseCasa, posseFora);
+    Math.max(
+      dados.posseCasa,
+      dados.posseFora
+    );
 
   const diferencaPosse =
     Math.abs(
-      posseCasa - posseFora
+      dados.posseCasa -
+      dados.posseFora
     );
 
   // ==========================================================
   // VOLUME TOTAL
   // ==========================================================
 
-  if (totalChutes >= 18) {
+  if (
+    totalChutes >= 18
+  ) {
 
     bonus += 12;
 
@@ -659,7 +975,9 @@ function analisarPressao(dados, jogo) {
       "💥 volume muito alto de chutes"
     );
 
-  } else if (totalChutes >= 15) {
+  } else if (
+    totalChutes >= 15
+  ) {
 
     bonus += 10;
 
@@ -667,7 +985,9 @@ function analisarPressao(dados, jogo) {
       "🔥 volume alto de chutes"
     );
 
-  } else if (totalChutes >= 12) {
+  } else if (
+    totalChutes >= 12
+  ) {
 
     bonus += 8;
 
@@ -675,13 +995,16 @@ function analisarPressao(dados, jogo) {
       "🎯 bom volume de chutes"
     );
 
-  } else if (totalChutes >= 9) {
+  } else if (
+    totalChutes >= 9
+  ) {
 
     bonus += 5;
 
     motivos.push(
       "🎯 volume interessante"
     );
+
   }
 
   // ==========================================================
@@ -720,6 +1043,7 @@ function analisarPressao(dados, jogo) {
     motivos.push(
       "📈 vantagem clara nas finalizações"
     );
+
   }
 
   // ==========================================================
@@ -747,13 +1071,16 @@ function analisarPressao(dados, jogo) {
     motivos.push(
       "⚔️ jogo com pressão dos dois lados"
     );
+
   }
 
   // ==========================================================
   // CHUTES NO ALVO
   // ==========================================================
 
-  if (totalAlvo >= 7) {
+  if (
+    totalAlvo >= 7
+  ) {
 
     bonus += 10;
 
@@ -761,7 +1088,9 @@ function analisarPressao(dados, jogo) {
       "🥅 muitos chutes no alvo"
     );
 
-  } else if (totalAlvo >= 5) {
+  } else if (
+    totalAlvo >= 5
+  ) {
 
     bonus += 8;
 
@@ -769,7 +1098,9 @@ function analisarPressao(dados, jogo) {
       "🥅 bom volume no alvo"
     );
 
-  } else if (totalAlvo >= 3) {
+  } else if (
+    totalAlvo >= 3
+  ) {
 
     bonus += 5;
 
@@ -784,6 +1115,7 @@ function analisarPressao(dados, jogo) {
     motivos.push(
       "⚠️ volume alto apesar de poucos no alvo"
     );
+
   }
 
   // ==========================================================
@@ -811,6 +1143,7 @@ function analisarPressao(dados, jogo) {
     motivos.push(
       "📊 posse favorável + volume"
     );
+
   }
 
   // ==========================================================
@@ -827,6 +1160,7 @@ function analisarPressao(dados, jogo) {
     motivos.push(
       "📈 grande domínio territorial"
     );
+
   }
 
   // ==========================================================
@@ -834,8 +1168,8 @@ function analisarPressao(dados, jogo) {
   // ==========================================================
 
   const ataquesPerigosos =
-    ataquesCasa +
-    ataquesFora;
+    dados.ataquesPerigososCasa +
+    dados.ataquesPerigososFora;
 
   if (
     ataquesPerigosos >= 80
@@ -866,6 +1200,7 @@ function analisarPressao(dados, jogo) {
     motivos.push(
       "⚔️ ataques perigosos presentes"
     );
+
   }
 
   // ==========================================================
@@ -874,19 +1209,20 @@ function analisarPressao(dados, jogo) {
 
   const maiorAtaque =
     Math.max(
-      ataquesCasa,
-      ataquesFora
+      dados.ataquesPerigososCasa,
+      dados.ataquesPerigososFora
     );
 
   const menorAtaque =
     Math.min(
-      ataquesCasa,
-      ataquesFora
+      dados.ataquesPerigososCasa,
+      dados.ataquesPerigososFora
     );
 
   if (
     maiorAtaque >= 45 &&
-    maiorAtaque >= menorAtaque + 20
+    maiorAtaque >=
+      menorAtaque + 20
   ) {
 
     bonus += 8;
@@ -894,6 +1230,7 @@ function analisarPressao(dados, jogo) {
     motivos.push(
       "🔥 forte domínio territorial de um lado"
     );
+
   }
 
   // ==========================================================
@@ -901,7 +1238,8 @@ function analisarPressao(dados, jogo) {
   // ==========================================================
 
   const xGTotal =
-    xGCasa + xGFora;
+    dados.xGCasa +
+    dados.xGFora;
 
   if (
     xGTotal >= 1.20
@@ -932,6 +1270,7 @@ function analisarPressao(dados, jogo) {
     motivos.push(
       `🧠 xG presente (${xGTotal.toFixed(2)})`
     );
+
   }
 
   // ==========================================================
@@ -940,19 +1279,20 @@ function analisarPressao(dados, jogo) {
 
   const maiorXG =
     Math.max(
-      xGCasa,
-      xGFora
+      dados.xGCasa,
+      dados.xGFora
     );
 
   const menorXG =
     Math.min(
-      xGCasa,
-      xGFora
+      dados.xGCasa,
+      dados.xGFora
     );
 
   if (
     maiorXG >= 0.55 &&
-    maiorXG >= menorXG + 0.35
+    maiorXG >=
+      menorXG + 0.35
   ) {
 
     bonus += 7;
@@ -960,6 +1300,7 @@ function analisarPressao(dados, jogo) {
     motivos.push(
       "🎯 superioridade clara de xG"
     );
+
   }
 
   // ==========================================================
@@ -989,10 +1330,11 @@ function analisarPressao(dados, jogo) {
     motivos.push(
       "🎯 presença dentro da área"
     );
+
   }
 
   // ==========================================================
-  // CHUTES BLOQUEADOS
+  // BLOQUEADOS
   // ==========================================================
 
   const bloqueados =
@@ -1018,6 +1360,7 @@ function analisarPressao(dados, jogo) {
     motivos.push(
       "🧱 finalizações bloqueadas"
     );
+
   }
 
   // ==========================================================
@@ -1047,6 +1390,7 @@ function analisarPressao(dados, jogo) {
     motivos.push(
       "🚨 grandes chances criadas"
     );
+
   }
 
   // ==========================================================
@@ -1065,11 +1409,12 @@ function analisarPressao(dados, jogo) {
 
   const diferencaGols =
     Math.abs(
-      golsCasa - golsFora
+      golsCasa -
+      golsFora
     );
 
   // ----------------------------------------------------------
-  // 0 x 0
+  // 0 X 0
   // ----------------------------------------------------------
 
   if (
@@ -1083,10 +1428,6 @@ function analisarPressao(dados, jogo) {
       "⚖️ 0–0 mantém necessidade de gol"
     );
 
-  // ----------------------------------------------------------
-  // EMPATE
-  // ----------------------------------------------------------
-
   } else if (
     golsCasa === golsFora
   ) {
@@ -1096,6 +1437,7 @@ function analisarPressao(dados, jogo) {
     motivos.push(
       "⚖️ jogo empatado"
     );
+
   }
 
   // ==========================================================
@@ -1130,7 +1472,9 @@ function analisarPressao(dados, jogo) {
       motivos.push(
         "🔥 equipe perdedora está pressionando"
       );
+
     }
+
   }
 
   // ==========================================================
@@ -1146,6 +1490,7 @@ function analisarPressao(dados, jogo) {
     motivos.push(
       "🧊 placar muito largo"
     );
+
   }
 
   // ==========================================================
@@ -1162,6 +1507,7 @@ function analisarPressao(dados, jogo) {
     motivos.push(
       "⚠️ posse alta sem finalização"
     );
+
   }
 
   // ==========================================================
@@ -1177,19 +1523,27 @@ function analisarPressao(dados, jogo) {
     motivos.push(
       "🧊 ritmo ofensivo muito baixo"
     );
+
   }
 
   return {
+
     bonus,
+
     motivos
+
   };
+
 }
 
 // ============================================================
 // SCORE V24
 // ============================================================
 
-function calcularScore(dados, jogo) {
+function calcularScore(
+  dados,
+  jogo
+) {
 
   let score = 25;
 
@@ -1213,9 +1567,7 @@ function calcularScore(dados, jogo) {
   );
 
   // ==========================================================
-  // ESCANTEIOS
-  //
-  // NÃO ALTERAM O SCORE.
+  // ESCANTEIOS NÃO ALTERAM SCORE
   // ==========================================================
 
   motivos.push(
@@ -1232,9 +1584,13 @@ function calcularScore(dados, jogo) {
     );
 
   return {
+
     score,
+
     motivos
+
   };
+
 }
 
 // ============================================================
@@ -1256,6 +1612,7 @@ function classificacao(score) {
     return "🟡 SINAL ATIVADO";
 
   return "⚪ FRACO";
+
 }
 
 // ============================================================
@@ -1268,9 +1625,14 @@ async function analisarJogo(jogo) {
     return;
 
   if (
-    JOGOS_JA_AVISADOS.has(jogo.id)
-  )
+    JOGOS_JA_AVISADOS.has(
+      jogo.id
+    )
+  ) {
+
     return;
+
+  }
 
   TOTAL_ANALISADOS++;
 
@@ -1280,21 +1642,26 @@ async function analisarJogo(jogo) {
 
   try {
 
+    const url =
+      `https://api.sofascore.com/api/v1/event/${jogo.id}/statistics`;
+
     const data =
       await getSofascore(
-        `https://api.sofascore.com/api/v1/event/${jogo.id}/statistics`
+        url
       );
 
     // ========================================================
-    // PEGAR PRIMEIRO TEMPO
+    // PRIMEIRO TEMPO
     // ========================================================
 
     const periodo =
-      (data?.statistics || [])
-        .find(
-          p =>
-            p.period === "1ST"
-        );
+      (
+        data?.statistics ||
+        []
+      ).find(
+        p =>
+          p.period === "1ST"
+      );
 
     if (!periodo) {
 
@@ -1303,6 +1670,7 @@ async function analisarJogo(jogo) {
       );
 
       return;
+
     }
 
     const dados =
@@ -1313,8 +1681,8 @@ async function analisarJogo(jogo) {
     // ========================================================
     // FILTRO MÍNIMO
     //
-    // Somente volume mínimo.
-    // Escanteios NÃO entram.
+    // SOMENTE VOLUME.
+    // ESCANTEIOS NÃO ENTRAM.
     // ========================================================
 
     if (
@@ -1327,6 +1695,7 @@ async function analisarJogo(jogo) {
       );
 
       return;
+
     }
 
     TOTAL_CANDIDATOS++;
@@ -1357,7 +1726,9 @@ async function analisarJogo(jogo) {
 
     console.log(
       "MOTIVOS:",
-      resultado.motivos.join(" | ")
+      resultado.motivos.join(
+        " | "
+      )
     );
 
     // ========================================================
@@ -1374,6 +1745,7 @@ async function analisarJogo(jogo) {
       );
 
       return;
+
     }
 
     // ========================================================
@@ -1468,7 +1840,7 @@ ${classificacao(resultado.score)}
 🕐 ${ULTIMO_CHECK}`;
 
     // ========================================================
-    // ENVIAR TELEGRAM
+    // ENVIAR
     // ========================================================
 
     if (
@@ -1484,17 +1856,20 @@ ${classificacao(resultado.score)}
       console.log(
         "✅ SINAL V24 ENVIADO"
       );
+
     }
 
     // ========================================================
-    // LIMPAR CACHE
+    // LIMPAR CACHE ANTIGO
     // ========================================================
 
     if (
-      JOGOS_JA_AVISADOS.size > 300
+      JOGOS_JA_AVISADOS.size >
+      300
     ) {
 
       JOGOS_JA_AVISADOS.clear();
+
     }
 
   } catch (e) {
@@ -1503,7 +1878,9 @@ ${classificacao(resultado.score)}
       `Erro jogo ${jogo.id}:`,
       e.message
     );
+
   }
+
 }
 
 // ============================================================
@@ -1512,7 +1889,9 @@ ${classificacao(resultado.score)}
 
 async function verificarJogosAoVivo() {
 
-  if (!podeRodarAgora()) {
+  if (
+    !podeRodarAgora()
+  ) {
 
     ULTIMO_CHECK =
       `Dormindo - ${new Date().toLocaleString("pt-BR")} - ${horarioTexto()}`;
@@ -1522,6 +1901,7 @@ async function verificarJogosAoVivo() {
     );
 
     return;
+
   }
 
   ULTIMO_CHECK =
@@ -1541,7 +1921,8 @@ async function verificarJogosAoVivo() {
       );
 
     const jogos =
-      data?.events || [];
+      data?.events ||
+      [];
 
     console.log(
       `Ao vivo: ${jogos.length}`
@@ -1555,7 +1936,8 @@ async function verificarJogosAoVivo() {
       jogos.filter(
         j =>
           j.status?.code === 31 ||
-          j.status?.type === "halftime"
+          j.status?.type ===
+            "halftime"
       );
 
     console.log(
@@ -1563,7 +1945,7 @@ async function verificarJogosAoVivo() {
     );
 
     // ========================================================
-    // ANALISAR CADA JOGO
+    // ANALISAR
     // ========================================================
 
     for (
@@ -1573,6 +1955,7 @@ async function verificarJogosAoVivo() {
       await analisarJogo(
         jogo
       );
+
     }
 
     ULTIMO_ERRO =
@@ -1587,7 +1970,9 @@ async function verificarJogosAoVivo() {
       "ERRO BUSCAR:",
       ULTIMO_ERRO
     );
+
   }
+
 }
 
 // ============================================================
@@ -1613,7 +1998,8 @@ async function verificarRelatorioDiario() {
   // ----------------------------------------------------------
 
   if (
-    DIA_RELATORIO !== diaAtual
+    DIA_RELATORIO !==
+    diaAtual
   ) {
 
     RELATORIO_ENVIADO_HOJE =
@@ -1621,6 +2007,19 @@ async function verificarRelatorioDiario() {
 
     DIA_RELATORIO =
       diaAtual;
+
+    TOTAL_ANALISADOS =
+      0;
+
+    TOTAL_CANDIDATOS =
+      0;
+
+    TOTAL_ENVIADOS =
+      0;
+
+    TOTAL_ERROS_403 =
+      0;
+
   }
 
   // ----------------------------------------------------------
@@ -1674,6 +2073,9 @@ async function verificarRelatorioDiario() {
 🛡️ Proteções:
 *volume mínimo + placar + anti-spam*
 
+🛡️ 403 detectados:
+*${TOTAL_ERROS_403}*
+
 ⚠️ Último erro:
 ${textoSeguro(ULTIMO_ERRO)}
 
@@ -1692,8 +2094,11 @@ ${textoSeguro(ULTIMO_ERRO)}
       console.log(
         "📊 RELATÓRIO 23H ENVIADO"
       );
+
     }
+
   }
+
 }
 
 // ============================================================
@@ -1703,13 +2108,14 @@ ${textoSeguro(ULTIMO_ERRO)}
 setInterval(
   verificarJogosAoVivo,
   INTERVALO_MINUTOS *
-  60 *
-  1000
+    60 *
+    1000
 );
 
 setInterval(
   verificarRelatorioDiario,
-  30 * 1000
+  30 *
+    1000
 );
 
 // ============================================================
@@ -1724,56 +2130,139 @@ verificarRelatorioDiario();
 // STATUS
 // ============================================================
 
-app.get("/", (req, res) => {
+app.get(
+  "/",
+  (req, res) => {
 
-  res.json({
+    res.json({
 
-    status:
-      "ELITE RADAR V24 ONLINE",
+      status:
+        "ELITE RADAR V24 ONLINE",
 
-    score_minimo:
-      SCORE_MINIMO,
+      versao:
+        "V24",
 
-    ultimo_check:
-      ULTIMO_CHECK,
+      score_minimo:
+        SCORE_MINIMO,
 
-    total_enviados:
-      TOTAL_ENVIADOS,
+      ultimo_check:
+        ULTIMO_CHECK,
 
-    total_analisados:
-      TOTAL_ANALISADOS,
+      total_enviados:
+        TOTAL_ENVIADOS,
 
-    total_candidatos:
-      TOTAL_CANDIDATOS,
+      total_analisados:
+        TOTAL_ANALISADOS,
 
-    jogos_avistados:
-      JOGOS_JA_AVISADOS.size,
+      total_candidatos:
+        TOTAL_CANDIDATOS,
 
-    ultimo_erro:
-      ULTIMO_ERRO,
+      jogos_avistados:
+        JOGOS_JA_AVISADOS.size,
 
-    intervalo:
-      "20 minutos",
+      ultimo_erro:
+        ULTIMO_ERRO,
 
-    estrategia:
-      "Pressão ofensiva -> escanteios 2º tempo",
+      ultimo_status_api:
+        ULTIMO_STATUS_API,
 
-    estatisticas:
-      "Chutes + alvo + posse + ataques perigosos + xG + domínio + placar",
+      erros_403:
+        TOTAL_ERROS_403,
 
-    escanteios_no_score:
-      false,
+      cooldown_403:
+        Date.now() <
+        BLOQUEADO_ATE,
 
-    horario:
-      "Seg-Sex 12h-00h / Sab-Dom 08h-00h BRT",
+      efo_ids_configurado:
+        !!EFO_IDS,
 
-    relatorio:
-      "Todos os dias às 23h BRT",
+      intervalo:
+        "20 minutos",
 
-    pode_rodar:
-      podeRodarAgora()
-  });
-});
+      estrategia:
+        "Pressão ofensiva -> escanteios 2º tempo",
+
+      estatisticas:
+        "Chutes + alvo + posse + ataques perigosos + xG + domínio + placar",
+
+      escanteios_no_score:
+        false,
+
+      horario:
+        "Seg-Sex 12h-00h / Sab-Dom 08h-00h BRT",
+
+      relatorio:
+        "Todos os dias às 23h BRT",
+
+      pode_rodar:
+        podeRodarAgora()
+
+    });
+
+  }
+);
+
+// ============================================================
+// API STATUS
+// ============================================================
+
+app.get(
+  "/api-status",
+  (req, res) => {
+
+    res.json({
+
+      online:
+        true,
+
+      versao:
+        "V24",
+
+      efo_ids:
+        EFO_IDS
+          ? "CONFIGURADO"
+          : "NÃO CONFIGURADO",
+
+      telegram:
+        TOKEN && CHAT_ID
+          ? "CONFIGURADO"
+          : "NÃO CONFIGURADO",
+
+      sofascore:
+        ULTIMO_STATUS_API,
+
+      ultimo_erro:
+        ULTIMO_ERRO,
+
+      erros_403:
+        TOTAL_ERROS_403,
+
+      cooldown:
+        Date.now() <
+        BLOQUEADO_ATE,
+
+      ultimo_check:
+        ULTIMO_CHECK,
+
+      analisados:
+        TOTAL_ANALISADOS,
+
+      candidatos:
+        TOTAL_CANDIDATOS,
+
+      enviados:
+        TOTAL_ENVIADOS,
+
+      cache:
+        CACHE_STATS.size,
+
+      jogos_avistados:
+        JOGOS_JA_AVISADOS.size
+
+    });
+
+  }
+);
 
 // ============================================================
 // TESTE TELEGRAM
@@ -1820,12 +2309,14 @@ ${SCORE_MINIMO}
 
       total_enviados:
         TOTAL_ENVIADOS
+
     });
+
   }
 );
 
 // ============================================================
-// LIMPAR CACHE
+// LIMPAR CACHE DE JOGOS AVISADOS
 // ============================================================
 
 app.get(
@@ -1839,12 +2330,74 @@ app.get(
 
     res.json({
 
-      ok: true,
+      ok:
+        true,
 
       antes,
 
-      depois: 0
+      depois:
+        0
+
     });
+
+  }
+);
+
+// ============================================================
+// LIMPAR CACHE DE ESTATÍSTICAS
+// ============================================================
+
+app.get(
+  "/limpar-stats-cache",
+  (req, res) => {
+
+    const antes =
+      CACHE_STATS.size;
+
+    CACHE_STATS.clear();
+
+    res.json({
+
+      ok:
+        true,
+
+      antes,
+
+      depois:
+        0
+
+    });
+
+  }
+);
+
+// ============================================================
+// RESETAR COOLDOWN
+// ============================================================
+
+app.get(
+  "/reset-api",
+  (req, res) => {
+
+    BLOQUEADO_ATE =
+      0;
+
+    ULTIMO_ERRO =
+      "Cooldown resetado manualmente";
+
+    res.json({
+
+      ok:
+        true,
+
+      cooldown:
+        false,
+
+      mensagem:
+        "Cooldown da API resetado"
+
+    });
+
   }
 );
 
@@ -1858,6 +2411,34 @@ app.listen(
 
     console.log(
       `🚀 ELITE RADAR V24 RODANDO NA PORTA ${PORT}`
+    );
+
+    console.log(
+      `⭐ Score mínimo: ${SCORE_MINIMO}`
+    );
+
+    console.log(
+      `⏱️ Varredura: ${INTERVALO_MINUTOS} minutos`
+    );
+
+    console.log(
+      `🚩 Escanteios no score: NÃO`
+    );
+
+    console.log(
+      `🔑 EFO_IDS: ${
+        EFO_IDS
+          ? "CONFIGURADO"
+          : "NÃO CONFIGURADO"
+      }`
+    );
+
+    console.log(
+      `📱 Telegram: ${
+        TOKEN && CHAT_ID
+          ? "CONFIGURADO"
+          : "NÃO CONFIGURADO"
+      }`
     );
 
   }
