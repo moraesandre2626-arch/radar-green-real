@@ -1,1420 +1,920 @@
 // ============================================================
-// ELITE RADAR V24 - PRESSÃO INTELIGENTE
+// ELITE RADAR V24 - API-FOOTBALL
+// PRESSÃO INTELIGENTE -> ESCANTEIOS NO 2º TEMPO
 // ============================================================
-// FOCO:
-// PRESSÃO REAL NO 1º TEMPO
-// -> CHUTES
-// -> CHUTES NO ALVO
-// -> POSSE
-// -> ATAQUES PERIGOSOS
-// -> xG
-// -> CHUTES DENTRO DA ÁREA
-// -> CHUTES BLOQUEADOS
-// -> GRANDES CHANCES
-// -> DIFERENÇA DE VOLUME
-// -> PLACAR
+// FONTE:
+// API-FOOTBALL / API-SPORTS
 //
-// OBJETIVO:
-// Encontrar jogos com forte pressão ofensiva no 1º tempo
-// visando oportunidade de ESCANTEIOS NO 2º TEMPO.
-//
-// IMPORTANTE:
-// A quantidade de escanteios do 1º tempo NÃO influencia
-// o score e NÃO elimina o jogo.
-//
-// SCORE MÍNIMO: 65
-// VARREDURA: 20 MINUTOS
-// RELATÓRIO: 23H BRT
-//
-// EFO_IDS:
-// Chave de análise configurada no Render.
-// A chave é lida por process.env.EFO_IDS
-// e NÃO fica exposta no código.
-//
+// REGRAS:
+// - API key somente no Render: EFO_IDS
+// - Máximo local: 99 requisições/dia
+// - Varredura: a cada 20 minutos
+// - 1 chamada para jogos ao vivo
+// - 1 chamada em lote para até 20 jogos HT
+// - Estatísticas de escanteios NÃO entram no score
+// - Score mínimo: 65
+// - Relatório diário: 23:00 BRT
 // ============================================================
 
 const express = require("express");
 const axios = require("axios");
 
 const app = express();
-
 app.use(express.json());
 
 const PORT = process.env.PORT || 10000;
 
 // ============================================================
-// TELEGRAM
-// ============================================================
-
-const TOKEN = (
-  process.env.TELEGRAM_BOT_TOKEN ||
-  process.env.TELEGRAM_TOKEN ||
-  process.env.TOKEN ||
-  ""
-).trim();
-
-const CHAT_ID = (
-  process.env.CHAT_ID ||
-  process.env.TELEGRAM_CHAT_ID ||
-  ""
-).trim();
-
-// ============================================================
-// CHAVE DE ANÁLISE
-// ============================================================
-
-const EFO_IDS = (
-  process.env.EFO_IDS ||
-  ""
-).trim();
-
-// ============================================================
 // CONFIGURAÇÕES
 // ============================================================
 
+const API_KEY = (process.env.EFO_IDS || "").trim();
+
+const TELEGRAM_TOKEN =
+  process.env.TELEGRAM_BOT_TOKEN ||
+  process.env.TELEGRAM_TOKEN ||
+  process.env.TOKEN ||
+  "";
+
+const CHAT_ID =
+  process.env.CHAT_ID ||
+  process.env.TELEGRAM_CHAT_ID ||
+  "";
+
+const API_BASE = "https://v3.football.api-sports.io";
+
+const MAX_REQUESTS_DAY = 99;
+
+const INTERVALO_SCAN_MS = 20 * 60 * 1000;
+
 const SCORE_MINIMO = 65;
 
-const INTERVALO_MINUTOS = 20;
+const TIMEOUT_API = 12000;
 
-const DELAY_SOFASCORE = 6000;
-
-const TIMEOUT = 12000;
-
-const TIMEOUT_PROXY = 18000;
-
-const CACHE_TTL = 30000;
-
-const COOLDOWN_403 = 120000;
-
-let ULTIMO_CHECK = "Nunca";
-
-let TOTAL_ENVIADOS = 0;
-
-let TOTAL_ANALISADOS = 0;
-
-let TOTAL_CANDIDATOS = 0;
-
-let TOTAL_ERROS_403 = 0;
-
-let ULTIMO_ERRO = "Nenhum";
-
-let ULTIMO_STATUS_API = "Nunca";
-
-let BLOQUEADO_ATE = 0;
-
-let JOGOS_JA_AVISADOS = new Set();
-
-let CACHE_STATS = new Map();
-
-let RELATORIO_ENVIADO_HOJE = false;
-
-let DIA_RELATORIO = "";
+const MAX_FIXTURES_BATCH = 20;
 
 // ============================================================
-// FUNÇÕES BÁSICAS
+// ESTADO
 // ============================================================
 
-function dormir(ms) {
+let requisicoesHoje = 0;
+let ultimaRespostaAPI = null;
+let ultimoErro = null;
+let ultimoScan = null;
+let proximoScan = null;
 
-  return new Promise(resolve => {
-    setTimeout(resolve, ms);
-  });
+let jogosAnalisados = 0;
+let candidatosEncontrados = 0;
+let alertasEnviados = 0;
 
+let protecoes = 0;
+let erros403 = 0;
+
+let ultimoResetUTC = null;
+
+const JOGOS_JA_AVISADOS = new Set();
+
+const CACHE_FIXTURES = new Map();
+
+const CACHE_TTL = 60 * 1000;
+
+// ============================================================
+// LOG
+// ============================================================
+
+function log(...args) {
+  console.log(
+    new Date().toISOString(),
+    ...args
+  );
 }
 
 // ============================================================
-// NÚMERO SEGURO
+// DATA / HORA
 // ============================================================
 
-function numero(v) {
+function agoraUTC() {
+  return new Date();
+}
 
-  if (v == null) {
+function dataUTC() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function horaBRT() {
+  return new Intl.DateTimeFormat("pt-BR", {
+    timeZone: "America/Sao_Paulo",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false
+  }).format(new Date());
+}
+
+function dataBRT() {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).format(new Date());
+}
+
+// ============================================================
+// RESET DIÁRIO
+// IMPORTANTE:
+// API-FOOTBALL trabalha com quota diária.
+// O reset oficial é baseado no sistema deles.
+// Mantemos nosso contador separado para nunca passar de 99.
+// ============================================================
+
+function verificarResetDiario() {
+  const hoje = dataUTC();
+
+  if (ultimoResetUTC !== hoje) {
+    ultimoResetUTC = hoje;
+
+    requisicoesHoje = 0;
+
+    jogosAnalisados = 0;
+    candidatosEncontrados = 0;
+    alertasEnviados = 0;
+
+    protecoes = 0;
+    erros403 = 0;
+
+    JOGOS_JA_AVISADOS.clear();
+
+    log("🔄 CONTADOR DIÁRIO RESETADO:", hoje);
+  }
+}
+
+// ============================================================
+// PODE CONSULTAR API?
+// ============================================================
+
+function podeConsultarAPI() {
+  verificarResetDiario();
+
+  if (!API_KEY) {
+    ultimoErro = "EFO_IDS não configurado no Render.";
+    return false;
+  }
+
+  if (requisicoesHoje >= MAX_REQUESTS_DAY) {
+    protecoes++;
+
+    ultimoErro =
+      `Limite interno de segurança atingido: ${MAX_REQUESTS_DAY}/dia.`;
+
+    log("🛑 LIMITE DE SEGURANÇA ATINGIDO");
+
+    return false;
+  }
+
+  return true;
+}
+
+// ============================================================
+// REGISTRA REQUISIÇÃO
+// ============================================================
+
+function registrarRequisicao(response) {
+  requisicoesHoje++;
+
+  ultimaRespostaAPI = new Date();
+
+  if (response && response.headers) {
+    const restante =
+      response.headers["x-ratelimit-requests-remaining"];
+
+    if (restante !== undefined) {
+      log(
+        `📊 API informou restante: ${restante}`
+      );
+    }
+  }
+
+  log(
+    `📡 REQUISIÇÃO API ${requisicoesHoje}/${MAX_REQUESTS_DAY}`
+  );
+}
+
+// ============================================================
+// CLIENTE API-FOOTBALL
+// ============================================================
+
+async function apiGet(endpoint, params = {}) {
+  if (!podeConsultarAPI()) {
+    throw new Error("LIMITE_API_INTERNO");
+  }
+
+  try {
+    const response = await axios.get(
+      `${API_BASE}${endpoint}`,
+      {
+        params,
+        timeout: TIMEOUT_API,
+        headers: {
+          "x-apisports-key": API_KEY,
+          "Accept": "application/json"
+        },
+        validateStatus: () => true
+      }
+    );
+
+    registrarRequisicao(response);
+
+    if (response.status === 403) {
+      erros403++;
+
+      ultimoErro =
+        "API respondeu 403.";
+
+      throw new Error("API_403");
+    }
+
+    if (response.status === 429) {
+      ultimoErro =
+        "API respondeu 429 - limite de requisições.";
+
+      throw new Error("API_429");
+    }
+
+    if (response.status < 200 || response.status >= 300) {
+      ultimoErro =
+        `API respondeu HTTP ${response.status}`;
+
+      throw new Error(
+        `API_HTTP_${response.status}`
+      );
+    }
+
+    const data = response.data;
+
+    if (data.errors && Object.keys(data.errors).length > 0) {
+      ultimoErro =
+        JSON.stringify(data.errors);
+
+      throw new Error(
+        "API_ERRORS"
+      );
+    }
+
+    return data;
+
+  } catch (error) {
+
+    if (
+      error.message !== "API_403" &&
+      error.message !== "API_429" &&
+      error.message !== "LIMITE_API_INTERNO" &&
+      error.message !== "API_ERRORS"
+    ) {
+      ultimoErro = error.message;
+    }
+
+    throw error;
+  }
+}
+
+// ============================================================
+// BUSCAR JOGOS AO VIVO
+// ============================================================
+
+async function buscarJogosAoVivo() {
+
+  const cacheKey = "live";
+
+  const cache = CACHE_FIXTURES.get(cacheKey);
+
+  if (
+    cache &&
+    Date.now() - cache.timestamp < CACHE_TTL
+  ) {
+    return cache.data;
+  }
+
+  const data = await apiGet(
+    "/fixtures",
+    {
+      live: "all"
+    }
+  );
+
+  const jogos =
+    Array.isArray(data.response)
+      ? data.response
+      : [];
+
+  CACHE_FIXTURES.set(
+    cacheKey,
+    {
+      timestamp: Date.now(),
+      data: jogos
+    }
+  );
+
+  return jogos;
+}
+
+// ============================================================
+// IDENTIFICAR INTERVALO
+// ============================================================
+
+function estaNoIntervalo(jogo) {
+
+  const status =
+    jogo?.fixture?.status?.short;
+
+  return status === "HT";
+}
+
+// ============================================================
+// BUSCA DADOS EM LOTE
+// ATÉ 20 IDS POR CHAMADA
+// ============================================================
+
+async function buscarDetalhesEmLote(ids) {
+
+  if (!ids.length) {
+    return [];
+  }
+
+  const resultados = [];
+
+  for (
+    let i = 0;
+    i < ids.length;
+    i += MAX_FIXTURES_BATCH
+  ) {
+
+    const lote =
+      ids.slice(
+        i,
+        i + MAX_FIXTURES_BATCH
+      );
+
+    if (!podeConsultarAPI()) {
+      break;
+    }
+
+    const idsString =
+      lote.join("-");
+
+    log(
+      `📦 Buscando lote com ${lote.length} jogos`
+    );
+
+    const data =
+      await apiGet(
+        "/fixtures",
+        {
+          ids: idsString
+        }
+      );
+
+    if (
+      Array.isArray(data.response)
+    ) {
+      resultados.push(
+        ...data.response
+      );
+    }
+  }
+
+  return resultados;
+}
+
+// ============================================================
+// PEGAR ESTATÍSTICA PELO NOME
+// ============================================================
+
+function numero(valor) {
+
+  if (
+    valor === null ||
+    valor === undefined ||
+    valor === ""
+  ) {
     return 0;
   }
 
-  if (typeof v === "number") {
-
-    return isFinite(v)
-      ? v
-      : 0;
-
+  if (
+    typeof valor === "number"
+  ) {
+    return valor;
   }
 
-  const n = parseFloat(
-    String(v)
+  const texto =
+    String(valor)
       .replace("%", "")
       .replace(",", ".")
-  );
+      .trim();
 
-  return isFinite(n)
+  const n =
+    parseFloat(texto);
+
+  return Number.isFinite(n)
     ? n
     : 0;
-
 }
 
 // ============================================================
-// TEXTO SEGURO
+// NORMALIZAR ESTATÍSTICAS
 // ============================================================
 
-function textoSeguro(v) {
+function extrairEstatisticas(jogo) {
 
-  return String(v || "")
-    .replace(/[*_`\[\]]/g, "");
+  const lista =
+    jogo.statistics;
 
-}
-
-// ============================================================
-// HORÁRIO BRASIL
-// ============================================================
-
-function agoraBrasil() {
-
-  return new Date(
-    new Date().toLocaleString(
-      "en-US",
-      {
-        timeZone:
-          "America/Sao_Paulo"
-      }
-    )
-  );
-
-}
-
-// ============================================================
-// PODE RODAR
-// ============================================================
-
-function podeRodarAgora() {
-
-  const agora =
-    agoraBrasil();
-
-  const h =
-    agora.getHours();
-
-  const d =
-    agora.getDay();
-
-  const fimDeSemana =
-    d === 0 ||
-    d === 6;
-
-  if (fimDeSemana) {
-
-    return (
-      h >= 8 &&
-      h < 24
-    );
-
-  }
-
-  return (
-    h >= 12 &&
-    h < 24
-  );
-
-}
-
-// ============================================================
-// HORÁRIO TEXTO
-// ============================================================
-
-function horarioTexto() {
-
-  const d =
-    agoraBrasil().getDay();
-
-  return (
-    d === 0 ||
-    d === 6
-  )
-    ? "Sab-Dom 08h-00h BRT"
-    : "Seg-Sex 12h-00h BRT";
-
-}
-
-// ============================================================
-// TELEGRAM
-// ============================================================
-
-async function sendTelegram(texto) {
-
-  if (!TOKEN || !CHAT_ID) {
-
-    console.log(
-      "Telegram não configurado."
-    );
-
-    return false;
-  }
-
-  try {
-
-    await axios.post(
-      `https://api.telegram.org/bot${TOKEN}/sendMessage`,
-      {
-        chat_id:
-          CHAT_ID,
-
-        text:
-          texto,
-
-        parse_mode:
-          "Markdown"
-      },
-      {
-        timeout:
-          10000
-      }
-    );
-
-    TOTAL_ENVIADOS++;
-
-    return true;
-
-  } catch (e) {
-
-    console.log(
-      "ERRO TELEGRAM:",
-      e.response?.data ||
-      e.message
-    );
-
-    return false;
-  }
-
-}
-
-// ============================================================
-// HEADERS SOFASCORE
-// ============================================================
-
-const HEADERS = {
-
-  "User-Agent":
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36",
-
-  "Accept":
-    "application/json,text/plain,*/*",
-
-  "Referer":
-    "https://www.sofascore.com/",
-
-  "Origin":
-    "https://www.sofascore.com",
-
-  "Connection":
-    "keep-alive"
-};
-
-// ============================================================
-// CACHE
-// ============================================================
-
-function cacheGet(url) {
-
-  const item =
-    CACHE_STATS.get(url);
-
-  if (!item) {
+  if (
+    !Array.isArray(lista) ||
+    lista.length < 2
+  ) {
     return null;
   }
-
-  if (
-    Date.now() -
-    item.timestamp >
-    CACHE_TTL
-  ) {
-
-    CACHE_STATS.delete(url);
-
-    return null;
-  }
-
-  return item.data;
-
-}
-
-function cacheSet(url, data) {
-
-  CACHE_STATS.set(
-    url,
-    {
-      timestamp:
-        Date.now(),
-
-      data
-    }
-  );
-
-}
-
-// ============================================================
-// GET SOFASCORE
-// ============================================================
-
-async function getSofascore(url) {
-
-  // ----------------------------------------------------------
-  // COOLDOWN GLOBAL
-  // ----------------------------------------------------------
-
-  if (
-    Date.now() <
-    BLOQUEADO_ATE
-  ) {
-
-    const segundos =
-      Math.ceil(
-        (
-          BLOQUEADO_ATE -
-          Date.now()
-        ) / 1000
-      );
-
-    throw new Error(
-      `SofaScore em cooldown por 403 (${segundos}s)`
-    );
-  }
-
-  // ----------------------------------------------------------
-  // CACHE
-  // ----------------------------------------------------------
-
-  const cached =
-    cacheGet(url);
-
-  if (cached) {
-
-    console.log(
-      "CACHE OK:",
-      url
-    );
-
-    return cached;
-  }
-
-  // ----------------------------------------------------------
-  // ACESSO DIRETO
-  // ----------------------------------------------------------
-
-  try {
-
-    const resposta =
-      await axios.get(
-        url,
-        {
-          headers:
-            HEADERS,
-
-          timeout:
-            TIMEOUT,
-
-          validateStatus:
-            status =>
-              status >= 200 &&
-              status < 500
-        }
-      );
-
-    if (
-      resposta.status === 200
-    ) {
-
-      cacheSet(
-        url,
-        resposta.data
-      );
-
-      ULTIMO_STATUS_API =
-        "SofaScore direto OK";
-
-      return resposta.data;
-    }
-
-    if (
-      resposta.status === 403
-    ) {
-
-      TOTAL_ERROS_403++;
-
-      BLOQUEADO_ATE =
-        Date.now() +
-        COOLDOWN_403;
-
-      console.log(
-        "403 SofaScore direto."
-      );
-
-      console.log(
-        `Cooldown: ${COOLDOWN_403 / 1000}s`
-      );
-
-    } else {
-
-      console.log(
-        `SofaScore HTTP ${resposta.status}`
-      );
-    }
-
-  } catch (e) {
-
-    console.log(
-      "Erro acesso direto:",
-      e.message
-    );
-  }
-
-  // ----------------------------------------------------------
-  // PROXY 1
-  // ----------------------------------------------------------
-
-  if (
-    Date.now() <
-    BLOQUEADO_ATE
-  ) {
-
-    console.log(
-      "Tentando proxy apesar do cooldown..."
-    );
-
-  }
-
-  try {
-
-    const proxyUrl =
-      `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
-
-    const resposta =
-      await axios.get(
-        proxyUrl,
-        {
-          timeout:
-            TIMEOUT_PROXY
-        }
-      );
-
-    let dados =
-      resposta.data;
-
-    if (
-      typeof dados ===
-      "string"
-    ) {
-
-      dados =
-        JSON.parse(dados);
-
-    }
-
-    cacheSet(
-      url,
-      dados
-    );
-
-    ULTIMO_STATUS_API =
-      "Proxy 1 OK";
-
-    console.log(
-      "Proxy 1 funcionou!"
-    );
-
-    return dados;
-
-  } catch (e) {
-
-    console.log(
-      "Proxy 1 falhou:",
-      e.message
-    );
-  }
-
-  // ----------------------------------------------------------
-  // PROXY 2
-  // ----------------------------------------------------------
-
-  try {
-
-    const proxyUrl2 =
-      `https://corsproxy.io/?${encodeURIComponent(url)}`;
-
-    const resposta3 =
-      await axios.get(
-        proxyUrl2,
-        {
-          headers:
-            HEADERS,
-
-          timeout:
-            TIMEOUT_PROXY
-        }
-      );
-
-    let dados =
-      resposta3.data;
-
-    if (
-      typeof dados ===
-      "string"
-    ) {
-
-      dados =
-        JSON.parse(dados);
-
-    }
-
-    cacheSet(
-      url,
-      dados
-    );
-
-    ULTIMO_STATUS_API =
-      "Proxy 2 OK";
-
-    console.log(
-      "Proxy 2 funcionou!"
-    );
-
-    return dados;
-
-  } catch (e) {
-
-    console.log(
-      "Proxy 2 falhou:",
-      e.message
-    );
-  }
-
-  throw new Error(
-    "SofaScore indisponível após acesso direto + proxies"
-  );
-
-}
-
-// ============================================================
-// EXTRAIR ESTATÍSTICAS
-// ============================================================
-
-function extrairEstatisticas(periodo) {
-
-  const dados = {
-
-    escanteios: 0,
-
-    cantosCasa: 0,
-    cantosFora: 0,
-
-    chutes: 0,
-
-    chutesCasa: 0,
-    chutesFora: 0,
-
-    chutesNoAlvo: 0,
-
-    alvoCasa: 0,
-    alvoFora: 0,
-
-    bloqueadosCasa: 0,
-    bloqueadosFora: 0,
-
-    dentroAreaCasa: 0,
-    dentroAreaFora: 0,
-
-    foraAreaCasa: 0,
-    foraAreaFora: 0,
-
-    ataquesPerigososCasa: 0,
-    ataquesPerigososFora: 0,
-
-    ataquesCasa: 0,
-    ataquesFora: 0,
-
-    posseCasa: 0,
-    posseFora: 0,
-
-    xGCasa: 0,
-    xGFora: 0,
-
-    grandesChancesCasa: 0,
-    grandesChancesFora: 0
-
-  };
-
-  for (
-    const grupo of
-    periodo?.groups || []
-  ) {
-
-    for (
-      const item of
-      grupo.statisticsItems || []
-    ) {
-
-      const nome =
-        String(
-          item.name || ""
-        )
-          .toLowerCase()
-          .trim();
-
-      const home =
-        numero(item.home);
-
-      const away =
-        numero(item.away);
-
-      // ------------------------------------------------------
-      // ESCANTEIOS
-      // NÃO ENTRA NO SCORE
-      // ------------------------------------------------------
-
-      if (
-        nome.includes("corner") ||
-        nome.includes("escanteio")
-      ) {
-
-        dados.escanteios +=
-          home + away;
-
-        dados.cantosCasa +=
-          home;
-
-        dados.cantosFora +=
-          away;
-
-        continue;
-      }
-
-      // ------------------------------------------------------
-      // xG
-      // ------------------------------------------------------
-
-      if (
-        nome === "expected goals" ||
-        nome === "xg" ||
-        nome.includes(
-          "expected goals"
-        )
-      ) {
-
-        dados.xGCasa =
-          home;
-
-        dados.xGFora =
-          away;
-
-        continue;
-      }
-
-      // ------------------------------------------------------
-      // TOTAL SHOTS
-      // ------------------------------------------------------
-
-      if (
-        nome === "total shots" ||
-        nome === "shots" ||
-        nome.includes(
-          "total shots"
-        )
-      ) {
-
-        dados.chutes +=
-          home + away;
-
-        dados.chutesCasa +=
-          home;
-
-        dados.chutesFora +=
-          away;
-
-        continue;
-      }
-
-      // ------------------------------------------------------
-      // SHOTS ON TARGET
-      // ------------------------------------------------------
-
-      if (
-        nome.includes(
-          "shots on target"
-        ) ||
-        nome.includes(
-          "shots on goal"
-        ) ||
-        nome === "on target"
-      ) {
-
-        dados.chutesNoAlvo +=
-          home + away;
-
-        dados.alvoCasa +=
-          home;
-
-        dados.alvoFora +=
-          away;
-
-        continue;
-      }
-
-      // ------------------------------------------------------
-      // BLOCKED SHOTS
-      // ------------------------------------------------------
-
-      if (
-        nome.includes(
-          "blocked shots"
-        ) ||
-        nome.includes(
-          "shots blocked"
-        )
-      ) {
-
-        dados.bloqueadosCasa +=
-          home;
-
-        dados.bloqueadosFora +=
-          away;
-
-        continue;
-      }
-
-      // ------------------------------------------------------
-      // SHOTS INSIDE BOX
-      // ------------------------------------------------------
-
-      if (
-        nome.includes(
-          "shots inside box"
-        ) ||
-        nome.includes(
-          "shots inside penalty area"
-        ) ||
-        nome.includes(
-          "inside box"
-        )
-      ) {
-
-        dados.dentroAreaCasa +=
-          home;
-
-        dados.dentroAreaFora +=
-          away;
-
-        continue;
-      }
-
-      // ------------------------------------------------------
-      // SHOTS OUTSIDE BOX
-      // ------------------------------------------------------
-
-      if (
-        nome.includes(
-          "shots outside box"
-        ) ||
-        nome.includes(
-          "outside box"
-        )
-      ) {
-
-        dados.foraAreaCasa +=
-          home;
-
-        dados.foraAreaFora +=
-          away;
-
-        continue;
-      }
-
-      // ------------------------------------------------------
-      // ATAQUES PERIGOSOS
-      // ------------------------------------------------------
-
-      if (
-        nome.includes(
-          "dangerous attacks"
-        )
-      ) {
-
-        dados.ataquesPerigososCasa +=
-          home;
-
-        dados.ataquesPerigososFora +=
-          away;
-
-        continue;
-      }
-
-      // ------------------------------------------------------
-      // ATAQUES
-      // ------------------------------------------------------
-
-      if (
-        nome === "attacks"
-      ) {
-
-        dados.ataquesCasa +=
-          home;
-
-        dados.ataquesFora +=
-          away;
-
-        continue;
-      }
-
-      // ------------------------------------------------------
-      // POSSE
-      // ------------------------------------------------------
-
-      if (
-        nome.includes(
-          "ball possession"
-        ) ||
-        nome === "possession"
-      ) {
-
-        dados.posseCasa =
-          home;
-
-        dados.posseFora =
-          away;
-
-        continue;
-      }
-
-      // ------------------------------------------------------
-      // GRANDES CHANCES
-      // ------------------------------------------------------
-
-      if (
-        nome.includes(
-          "big chances"
-        )
-      ) {
-
-        dados.grandesChancesCasa +=
-          home;
-
-        dados.grandesChancesFora +=
-          away;
-
-        continue;
-      }
-
-    }
-  }
-
-  return dados;
-
-}
-
-// ============================================================
-// ANALISAR PRESSÃO V24
-// ============================================================
-
-function analisarPressao(
-  dados,
-  jogo
-) {
-
-  let bonus = 0;
-
-  const motivos = [];
 
   const casa =
-    dados.chutesCasa;
+    lista[0];
 
   const fora =
-    dados.chutesFora;
+    lista[1];
+
+  function pegarTime(
+    bloco,
+    nomes
+  ) {
+
+    const stats =
+      Array.isArray(bloco.statistics)
+        ? bloco.statistics
+        : [];
+
+    for (const nome of nomes) {
+
+      const item =
+        stats.find(
+          s =>
+            String(s.type)
+              .toLowerCase() ===
+            String(nome)
+              .toLowerCase()
+        );
+
+      if (item) {
+        return numero(item.value);
+      }
+    }
+
+    return 0;
+  }
+
+  const home = {
+    chutes: pegarTime(
+      casa,
+      ["Total Shots"]
+    ),
+
+    alvo: pegarTime(
+      casa,
+      ["Shots on Goal"]
+    ),
+
+    bloqueados: pegarTime(
+      casa,
+      ["Blocked Shots"]
+    ),
+
+    dentroArea: pegarTime(
+      casa,
+      ["Shots insidebox"]
+    ),
+
+    posse: pegarTime(
+      casa,
+      ["Ball Possession"]
+    ),
+
+    ataquesPerigosos: 0,
+
+    xg: 0,
+
+    grandesChances: 0,
+
+    escanteios: pegarTime(
+      casa,
+      ["Corner Kicks"]
+    )
+  };
+
+  const away = {
+    chutes: pegarTime(
+      fora,
+      ["Total Shots"]
+    ),
+
+    alvo: pegarTime(
+      fora,
+      ["Shots on Goal"]
+    ),
+
+    bloqueados: pegarTime(
+      fora,
+      ["Blocked Shots"]
+    ),
+
+    dentroArea: pegarTime(
+      fora,
+      ["Shots insidebox"]
+    ),
+
+    posse: pegarTime(
+      fora,
+      ["Ball Possession"]
+    ),
+
+    ataquesPerigosos: 0,
+
+    xg: 0,
+
+    grandesChances: 0,
+
+    escanteios: pegarTime(
+      fora,
+      ["Corner Kicks"]
+    )
+  };
+
+  // Algumas competições/API podem não fornecer
+  // dangerous attacks, xG ou big chances nas estatísticas.
+  //
+  // Eles permanecem 0 quando não estão disponíveis.
+  //
+  // Isso é intencional: NÃO inventamos números.
+
+  return {
+    home,
+    away
+  };
+}
+
+// ============================================================
+// PRESSÃO
+// ============================================================
+
+function analisarPressao(dados) {
+
+  const h = dados.home;
+  const a = dados.away;
+
+  let bonus = 0;
+  const fatores = [];
 
   const totalChutes =
-    dados.chutes;
+    h.chutes + a.chutes;
+
+  const maxChutes =
+    Math.max(
+      h.chutes,
+      a.chutes
+    );
+
+  const minChutes =
+    Math.min(
+      h.chutes,
+      a.chutes
+    );
+
+  const diffChutes =
+    maxChutes -
+    minChutes;
+
+  // ----------------------------------------------------------
+  // CHUTES TOTAIS
+  // ----------------------------------------------------------
+
+  if (totalChutes >= 18) {
+    bonus += 12;
+    fatores.push("18+ chutes");
+  } else if (totalChutes >= 15) {
+    bonus += 10;
+    fatores.push("15+ chutes");
+  } else if (totalChutes >= 12) {
+    bonus += 8;
+    fatores.push("12+ chutes");
+  } else if (totalChutes >= 9) {
+    bonus += 5;
+    fatores.push("9+ chutes");
+  }
+
+  // ----------------------------------------------------------
+  // DOMÍNIO DE CHUTES
+  // ----------------------------------------------------------
+
+  if (
+    maxChutes >= 10 &&
+    diffChutes >= 5
+  ) {
+    bonus += 15;
+    fatores.push("forte domínio de chutes");
+  } else if (
+    maxChutes >= 9 &&
+    diffChutes >= 4
+  ) {
+    bonus += 12;
+    fatores.push("domínio de chutes");
+  } else if (
+    maxChutes >= 7 &&
+    diffChutes >= 3
+  ) {
+    bonus += 8;
+    fatores.push("vantagem de chutes");
+  }
+
+  // ----------------------------------------------------------
+  // CHUTES DOS DOIS LADOS
+  // ----------------------------------------------------------
+
+  if (
+    h.chutes >= 6 &&
+    a.chutes >= 6
+  ) {
+    bonus += 10;
+    fatores.push("pressão dos dois lados");
+  } else if (
+    h.chutes >= 5 &&
+    a.chutes >= 4
+  ) {
+    bonus += 7;
+    fatores.push("volume bilateral");
+  }
+
+  // ----------------------------------------------------------
+  // CHUTES NO ALVO
+  // ----------------------------------------------------------
 
   const totalAlvo =
-    dados.chutesNoAlvo;
+    h.alvo + a.alvo;
 
-  const maiorChute =
-    Math.max(
-      casa,
-      fora
-    );
-
-  const menorChute =
-    Math.min(
-      casa,
-      fora
-    );
-
-  const diferencaChutes =
-    maiorChute -
-    menorChute;
-
-  const maiorPosse =
-    Math.max(
-      dados.posseCasa,
-      dados.posseFora
-    );
-
-  const diferencaPosse =
-    Math.abs(
-      dados.posseCasa -
-      dados.posseFora
-    );
-
-  // ==========================================================
-  // VOLUME TOTAL
-  // ==========================================================
-
-  if (
-    totalChutes >= 18
-  ) {
-
-    bonus += 12;
-
-    motivos.push(
-      "💥 volume muito alto de chutes"
-    );
-
-  } else if (
-    totalChutes >= 15
-  ) {
-
+  if (totalAlvo >= 7) {
     bonus += 10;
-
-    motivos.push(
-      "🔥 volume alto de chutes"
-    );
-
-  } else if (
-    totalChutes >= 12
-  ) {
-
+    fatores.push("7+ no alvo");
+  } else if (totalAlvo >= 5) {
     bonus += 8;
-
-    motivos.push(
-      "🎯 bom volume de chutes"
-    );
-
-  } else if (
-    totalChutes >= 9
-  ) {
-
+    fatores.push("5+ no alvo");
+  } else if (totalAlvo >= 3) {
     bonus += 5;
-
-    motivos.push(
-      "🎯 volume interessante"
-    );
-
+    fatores.push("3+ no alvo");
   }
 
-  // ==========================================================
-  // PRESSÃO FORTE DE UM LADO
-  // ==========================================================
-
-  if (
-    maiorChute >= 10 &&
-    diferencaChutes >= 5
-  ) {
-
-    bonus += 15;
-
-    motivos.push(
-      "🔥 pressão muito forte de um lado"
-    );
-
-  } else if (
-    maiorChute >= 9 &&
-    diferencaChutes >= 4
-  ) {
-
-    bonus += 12;
-
-    motivos.push(
-      "🔥 pressão forte de um lado"
-    );
-
-  } else if (
-    maiorChute >= 7 &&
-    diferencaChutes >= 3
-  ) {
-
-    bonus += 8;
-
-    motivos.push(
-      "📈 vantagem clara nas finalizações"
-    );
-
-  }
-
-  // ==========================================================
-  // PRESSÃO BILATERAL
-  // ==========================================================
-
-  if (
-    casa >= 6 &&
-    fora >= 6
-  ) {
-
-    bonus += 10;
-
-    motivos.push(
-      "🔥 pressão ofensiva bilateral"
-    );
-
-  } else if (
-    casa >= 5 &&
-    fora >= 4
-  ) {
-
-    bonus += 7;
-
-    motivos.push(
-      "⚔️ jogo com pressão dos dois lados"
-    );
-
-  }
-
-  // ==========================================================
-  // CHUTES NO ALVO
-  // ==========================================================
-
-  if (
-    totalAlvo >= 7
-  ) {
-
-    bonus += 10;
-
-    motivos.push(
-      "🥅 muitos chutes no alvo"
-    );
-
-  } else if (
-    totalAlvo >= 5
-  ) {
-
-    bonus += 8;
-
-    motivos.push(
-      "🥅 bom volume no alvo"
-    );
-
-  } else if (
-    totalAlvo >= 3
-  ) {
-
-    bonus += 5;
-
-    motivos.push(
-      "🥅 presença no alvo"
-    );
-
-  } else if (
-    maiorChute >= 9
-  ) {
-
-    motivos.push(
-      "⚠️ volume alto apesar de poucos no alvo"
-    );
-
-  }
-
-  // ==========================================================
+  // ----------------------------------------------------------
   // POSSE + CHUTES
-  // ==========================================================
+  // ----------------------------------------------------------
+
+  const maxPosse =
+    Math.max(
+      h.posse,
+      a.posse
+    );
+
+  const diffPosse =
+    Math.abs(
+      h.posse -
+      a.posse
+    );
 
   if (
-    maiorPosse >= 65 &&
-    maiorChute >= 8
+    maxPosse >= 65 &&
+    maxChutes >= 8
   ) {
-
     bonus += 10;
-
-    motivos.push(
-      "📊 domínio de posse + finalizações"
+    fatores.push(
+      "posse 65%+ + volume"
     );
-
   } else if (
-    maiorPosse >= 60 &&
-    maiorChute >= 7
+    maxPosse >= 60 &&
+    maxChutes >= 7
   ) {
-
     bonus += 7;
-
-    motivos.push(
-      "📊 posse favorável + volume"
+    fatores.push(
+      "posse 60%+ + volume"
     );
-
   }
-
-  // ==========================================================
-  // DIFERENÇA DE POSSE
-  // ==========================================================
 
   if (
-    diferencaPosse >= 20 &&
-    maiorChute >= 7
+    diffPosse >= 20 &&
+    maxChutes >= 7
   ) {
-
     bonus += 7;
-
-    motivos.push(
-      "📈 grande domínio territorial"
+    fatores.push(
+      "forte domínio territorial"
     );
-
   }
 
-  // ==========================================================
+  // ----------------------------------------------------------
   // ATAQUES PERIGOSOS
-  // ==========================================================
+  // ----------------------------------------------------------
 
-  const ataquesPerigosos =
-    dados.ataquesPerigososCasa +
-    dados.ataquesPerigososFora;
+  const totalAtaques =
+    h.ataquesPerigosos +
+    a.ataquesPerigosos;
 
-  if (
-    ataquesPerigosos >= 80
-  ) {
-
+  if (totalAtaques >= 80) {
     bonus += 10;
-
-    motivos.push(
-      "⚔️ ataques perigosos muito altos"
+    fatores.push(
+      "80+ ataques perigosos"
     );
-
   } else if (
-    ataquesPerigosos >= 60
+    totalAtaques >= 60
   ) {
-
     bonus += 8;
-
-    motivos.push(
-      "⚔️ ataques perigosos elevados"
+    fatores.push(
+      "60+ ataques perigosos"
     );
-
   } else if (
-    ataquesPerigosos >= 40
+    totalAtaques >= 40
   ) {
-
     bonus += 4;
-
-    motivos.push(
-      "⚔️ ataques perigosos presentes"
+    fatores.push(
+      "40+ ataques perigosos"
     );
-
   }
 
-  // ==========================================================
-  // ATAQUE PERIGOSO DE UM LADO
-  // ==========================================================
-
-  const maiorAtaque =
+  const maxAtaques =
     Math.max(
-      dados.ataquesPerigososCasa,
-      dados.ataquesPerigososFora
+      h.ataquesPerigosos,
+      a.ataquesPerigosos
     );
 
-  const menorAtaque =
+  const minAtaques =
     Math.min(
-      dados.ataquesPerigososCasa,
-      dados.ataquesPerigososFora
+      h.ataquesPerigosos,
+      a.ataquesPerigosos
     );
 
   if (
-    maiorAtaque >= 45 &&
-    maiorAtaque >=
-      menorAtaque + 20
+    maxAtaques >= 45 &&
+    maxAtaques >=
+      minAtaques + 20
   ) {
-
     bonus += 8;
-
-    motivos.push(
-      "🔥 forte domínio territorial de um lado"
+    fatores.push(
+      "domínio de ataques perigosos"
     );
-
   }
 
-  // ==========================================================
+  // ----------------------------------------------------------
   // xG
-  // ==========================================================
+  // ----------------------------------------------------------
 
-  const xGTotal =
-    dados.xGCasa +
-    dados.xGFora;
+  const totalXG =
+    h.xg + a.xg;
 
-  if (
-    xGTotal >= 1.20
-  ) {
-
+  if (totalXG >= 1.20) {
     bonus += 10;
-
-    motivos.push(
-      `🧠 xG muito bom (${xGTotal.toFixed(2)})`
-    );
-
+    fatores.push("xG 1.20+");
   } else if (
-    xGTotal >= 0.80
+    totalXG >= 0.80
   ) {
-
     bonus += 8;
-
-    motivos.push(
-      `🧠 xG bom (${xGTotal.toFixed(2)})`
-    );
-
+    fatores.push("xG 0.80+");
   } else if (
-    xGTotal >= 0.45
+    totalXG >= 0.45
   ) {
-
     bonus += 5;
-
-    motivos.push(
-      `🧠 xG presente (${xGTotal.toFixed(2)})`
-    );
-
+    fatores.push("xG 0.45+");
   }
 
-  // ==========================================================
-  // xG DOMINANTE
-  // ==========================================================
-
-  const maiorXG =
+  const maxXG =
     Math.max(
-      dados.xGCasa,
-      dados.xGFora
+      h.xg,
+      a.xg
     );
 
-  const menorXG =
+  const minXG =
     Math.min(
-      dados.xGCasa,
-      dados.xGFora
+      h.xg,
+      a.xg
     );
 
   if (
-    maiorXG >= 0.55 &&
-    maiorXG >=
-      menorXG + 0.35
+    maxXG >= 0.55 &&
+    maxXG >=
+      minXG + 0.35
   ) {
-
     bonus += 7;
-
-    motivos.push(
-      "🎯 superioridade clara de xG"
+    fatores.push(
+      "domínio de xG"
     );
-
   }
 
-  // ==========================================================
+  // ----------------------------------------------------------
   // DENTRO DA ÁREA
-  // ==========================================================
+  // ----------------------------------------------------------
 
-  const dentroArea =
-    dados.dentroAreaCasa +
-    dados.dentroAreaFora;
+  const totalDentro =
+    h.dentroArea +
+    a.dentroArea;
 
-  if (
-    dentroArea >= 8
-  ) {
-
+  if (totalDentro >= 8) {
     bonus += 8;
-
-    motivos.push(
-      "🎯 muitas finalizações dentro da área"
+    fatores.push(
+      "8+ chutes dentro da área"
     );
-
   } else if (
-    dentroArea >= 5
+    totalDentro >= 5
   ) {
-
     bonus += 5;
-
-    motivos.push(
-      "🎯 presença dentro da área"
+    fatores.push(
+      "5+ dentro da área"
     );
-
   }
 
-  // ==========================================================
+  // ----------------------------------------------------------
   // BLOQUEADOS
-  // ==========================================================
+  // ----------------------------------------------------------
 
-  const bloqueados =
-    dados.bloqueadosCasa +
-    dados.bloqueadosFora;
+  const totalBloqueados =
+    h.bloqueados +
+    a.bloqueados;
 
   if (
-    bloqueados >= 6
+    totalBloqueados >= 6
   ) {
-
     bonus += 6;
-
-    motivos.push(
-      "🧱 muitas finalizações bloqueadas"
+    fatores.push(
+      "6+ chutes bloqueados"
     );
-
   } else if (
-    bloqueados >= 4
+    totalBloqueados >= 4
   ) {
-
     bonus += 4;
-
-    motivos.push(
-      "🧱 finalizações bloqueadas"
+    fatores.push(
+      "4+ chutes bloqueados"
     );
-
   }
 
-  // ==========================================================
+  // ----------------------------------------------------------
   // GRANDES CHANCES
-  // ==========================================================
+  // ----------------------------------------------------------
 
-  const grandesChances =
-    dados.grandesChancesCasa +
-    dados.grandesChancesFora;
+  const totalGrandes =
+    h.grandesChances +
+    a.grandesChances;
 
   if (
-    grandesChances >= 3
+    totalGrandes >= 3
   ) {
-
     bonus += 8;
-
-    motivos.push(
-      "🚨 muitas grandes chances"
+    fatores.push(
+      "3+ grandes chances"
     );
-
   } else if (
-    grandesChances >= 2
+    totalGrandes >= 2
   ) {
-
     bonus += 5;
-
-    motivos.push(
-      "🚨 grandes chances criadas"
+    fatores.push(
+      "2+ grandes chances"
     );
-
   }
 
-  // ==========================================================
-  // PLACAR
-  // ==========================================================
+  return {
+    bonus,
+    fatores
+  };
+}
+
+// ============================================================
+// SCORE
+// ============================================================
+
+function calcularScore(dados, jogo) {
+
+  let score = 25;
+
+  const pressao =
+    analisarPressao(dados);
+
+  score += pressao.bonus;
 
   const golsCasa =
     numero(
-      jogo.homeScore?.current
+      jogo.goals?.home
     );
 
   const golsFora =
     numero(
-      jogo.awayScore?.current
+      jogo.goals?.away
     );
 
-  const diferencaGols =
-    Math.abs(
-      golsCasa -
-      golsFora
-    );
+  const totalGols =
+    golsCasa +
+    golsFora;
 
   // ----------------------------------------------------------
-  // 0 X 0
+  // PLACAR
   // ----------------------------------------------------------
 
   if (
@@ -1422,175 +922,97 @@ function analisarPressao(
     golsFora === 0
   ) {
 
-    bonus += 8;
-
-    motivos.push(
-      "⚖️ 0–0 mantém necessidade de gol"
-    );
+    score += 8;
 
   } else if (
     golsCasa === golsFora
   ) {
 
-    bonus += 5;
+    score += 5;
 
-    motivos.push(
-      "⚖️ jogo empatado"
-    );
+  } else {
 
-  }
+    const perdedor =
+      golsCasa < golsFora
+        ? dados.home
+        : dados.away;
 
-  // ==========================================================
-  // PERDEDOR PRESSIONANDO
-  // ==========================================================
-
-  if (
-    diferencaGols === 1
-  ) {
-
-    const casaPerdendo =
-      golsCasa < golsFora;
-
-    const foraPerdendo =
-      golsFora < golsCasa;
-
-    const casaPressiona =
-      casaPerdendo &&
-      casa >= fora + 3;
-
-    const foraPressiona =
-      foraPerdendo &&
-      fora >= casa + 3;
+    const vencedor =
+      golsCasa > golsFora
+        ? dados.home
+        : dados.away;
 
     if (
-      casaPressiona ||
-      foraPressiona
+      perdedor.chutes >=
+        vencedor.chutes + 3
     ) {
-
-      bonus += 8;
-
-      motivos.push(
-        "🔥 equipe perdedora está pressionando"
-      );
-
+      score += 8;
     }
-
   }
 
-  // ==========================================================
-  // PLACAR MUITO LARGO
-  // ==========================================================
+  // ----------------------------------------------------------
+  // GOLEADA
+  // ----------------------------------------------------------
 
   if (
-    diferencaGols >= 3
+    Math.abs(
+      golsCasa -
+      golsFora
+    ) >= 3
   ) {
-
-    bonus -= 8;
-
-    motivos.push(
-      "🧊 placar muito largo"
-    );
-
+    score -= 8;
   }
 
-  // ==========================================================
-  // POSSE SEM PRODUÇÃO
-  // ==========================================================
+  // ----------------------------------------------------------
+  // POSSE ALTA + POUCOS CHUTES
+  // ----------------------------------------------------------
+
+  const maxPosse =
+    Math.max(
+      dados.home.posse,
+      dados.away.posse
+    );
+
+  const maxChutes =
+    Math.max(
+      dados.home.chutes,
+      dados.away.chutes
+    );
 
   if (
-    maiorPosse >= 65 &&
-    maiorChute <= 5
+    maxPosse >= 65 &&
+    maxChutes <= 5
   ) {
-
-    bonus -= 12;
-
-    motivos.push(
-      "⚠️ posse alta sem finalização"
-    );
-
+    score -= 12;
   }
 
-  // ==========================================================
-  // VOLUME MUITO BAIXO
-  // ==========================================================
+  // ----------------------------------------------------------
+  // JOGO MUITO FRACO
+  // ----------------------------------------------------------
+
+  const totalChutes =
+    dados.home.chutes +
+    dados.away.chutes;
 
   if (
     totalChutes <= 5
   ) {
-
-    bonus -= 15;
-
-    motivos.push(
-      "🧊 ritmo ofensivo muito baixo"
-    );
-
+    score -= 15;
   }
-
-  return {
-
-    bonus,
-
-    motivos
-
-  };
-
-}
-
-// ============================================================
-// SCORE V24
-// ============================================================
-
-function calcularScore(
-  dados,
-  jogo
-) {
-
-  let score = 25;
-
-  const motivos = [];
-
-  motivos.push(
-    "🧠 análise combinada de pressão"
-  );
-
-  const pressao =
-    analisarPressao(
-      dados,
-      jogo
-    );
-
-  score +=
-    pressao.bonus;
-
-  motivos.push(
-    ...pressao.motivos
-  );
-
-  // ==========================================================
-  // ESCANTEIOS NÃO ALTERAM SCORE
-  // ==========================================================
-
-  motivos.push(
-    "🚩 escanteios do 1ºT não interferem no score"
-  );
 
   score =
     Math.max(
       0,
       Math.min(
         100,
-        Math.round(score)
+        score
       )
     );
 
   return {
-
     score,
-
-    motivos
-
+    fatores: pressao.fatores
   };
-
 }
 
 // ============================================================
@@ -1600,531 +1022,650 @@ function calcularScore(
 function classificacao(score) {
 
   if (score >= 90)
-    return "🔥🔥 EXCEPCIONAL";
+    return "🔥 EXCEPCIONAL";
 
   if (score >= 85)
-    return "🔥 MUITO FORTE";
+    return "🚀 MUITO FORTE";
 
   if (score >= 75)
-    return "🟢 SINAL FORTE";
+    return "🟢 FORTE";
 
   if (score >= 65)
-    return "🟡 SINAL ATIVADO";
+    return "🟡 ATIVADO";
 
   return "⚪ FRACO";
+}
 
+// ============================================================
+// FORMATAR JOGO
+// ============================================================
+
+function nomeJogo(jogo) {
+
+  const casa =
+    jogo.teams?.home?.name ||
+    "Casa";
+
+  const fora =
+    jogo.teams?.away?.name ||
+    "Fora";
+
+  return `${casa} x ${fora}`;
 }
 
 // ============================================================
 // ANALISAR JOGO
 // ============================================================
 
-async function analisarJogo(jogo) {
+function analisarJogo(jogo) {
 
-  if (!jogo?.id)
-    return;
+  const dados =
+    extrairEstatisticas(jogo);
+
+  if (!dados) {
+    return null;
+  }
+
+  const totalChutes =
+    dados.home.chutes +
+    dados.away.chutes;
+
+  // ----------------------------------------------------------
+  // FILTRO MÍNIMO
+  // ----------------------------------------------------------
+
+  if (totalChutes < 7) {
+    return null;
+  }
+
+  const resultado =
+    calcularScore(
+      dados,
+      jogo
+    );
 
   if (
-    JOGOS_JA_AVISADOS.has(
-      jogo.id
-    )
+    resultado.score <
+    SCORE_MINIMO
   ) {
-
-    return;
-
+    return null;
   }
 
-  TOTAL_ANALISADOS++;
+  const casa =
+    jogo.teams?.home?.name ||
+    "Casa";
 
-  await dormir(
-    DELAY_SOFASCORE
-  );
+  const fora =
+    jogo.teams?.away?.name ||
+    "Fora";
 
-  try {
+  return {
+    id: jogo.fixture.id,
 
-    const url =
-      `https://api.sofascore.com/api/v1/event/${jogo.id}/statistics`;
+    nome:
+      `${casa} x ${fora}`,
 
-    const data =
-      await getSofascore(
-        url
-      );
+    score:
+      resultado.score,
 
-    // ========================================================
-    // PRIMEIRO TEMPO
-    // ========================================================
+    classificacao:
+      classificacao(
+        resultado.score
+      ),
 
-    const periodo =
-      (
-        data?.statistics ||
-        []
-      ).find(
-        p =>
-          p.period === "1ST"
-      );
+    gols:
+      `${jogo.goals?.home ?? 0} x ${jogo.goals?.away ?? 0}`,
 
-    if (!periodo) {
+    minuto:
+      jogo.fixture?.status?.elapsed ||
+      "HT",
 
-      console.log(
-        `Jogo ${jogo.id} sem estatísticas do 1º tempo.`
-      );
+    home: dados.home,
 
-      return;
+    away: dados.away,
 
-    }
-
-    const dados =
-      extrairEstatisticas(
-        periodo
-      );
-
-    // ========================================================
-    // FILTRO MÍNIMO
-    //
-    // SOMENTE VOLUME.
-    // ESCANTEIOS NÃO ENTRAM.
-    // ========================================================
-
-    if (
-      dados.chutes < 7
-    ) {
-
-      console.log(
-        `${jogo.homeTeam?.name} x ${jogo.awayTeam?.name} | ` +
-        `descartado: ${dados.chutes} chutes`
-      );
-
-      return;
-
-    }
-
-    TOTAL_CANDIDATOS++;
-
-    // ========================================================
-    // SCORE
-    // ========================================================
-
-    const resultado =
-      calcularScore(
-        dados,
-        jogo
-      );
-
-    console.log(
-      `\n${jogo.homeTeam?.name} x ${jogo.awayTeam?.name}`
-    );
-
-    console.log(
-      `C:${dados.escanteios} | ` +
-      `CH:${dados.chutes} | ` +
-      `ALVO:${dados.chutesNoAlvo} | ` +
-      `POSSE:${dados.posseCasa}%/${dados.posseFora}% | ` +
-      `ATAQUES:${dados.ataquesPerigososCasa}/${dados.ataquesPerigososFora} | ` +
-      `xG:${dados.xGCasa.toFixed(2)}/${dados.xGFora.toFixed(2)} | ` +
-      `SCORE:${resultado.score}`
-    );
-
-    console.log(
-      "MOTIVOS:",
-      resultado.motivos.join(
-        " | "
-      )
-    );
-
-    // ========================================================
-    // SCORE MÍNIMO
-    // ========================================================
-
-    if (
-      resultado.score <
-      SCORE_MINIMO
-    ) {
-
-      console.log(
-        `❌ abaixo do mínimo: ${resultado.score}`
-      );
-
-      return;
-
-    }
-
-    // ========================================================
-    // DADOS DO JOGO
-    // ========================================================
-
-    const casa =
-      textoSeguro(
-        jogo.homeTeam?.name
-      );
-
-    const fora =
-      textoSeguro(
-        jogo.awayTeam?.name
-      );
-
-    const golsCasa =
-      numero(
-        jogo.homeScore?.current
-      );
-
-    const golsFora =
-      numero(
-        jogo.awayScore?.current
-      );
-
-    // ========================================================
-    // MENSAGEM TELEGRAM
-    // ========================================================
-
-    const mensagem =
-`🚨 *ELITE RADAR V24 — PRESSÃO DETECTADA* 🚨
-
-⚽ *${casa} ${golsCasa} x ${golsFora} ${fora}*
-
-⏱️ *INTERVALO*
-
-━━━━━━━━━━━━━━━━━━
-
-📊 *ESTATÍSTICAS DO 1º TEMPO*
-
-🎯 Chutes: *${dados.chutes}*
-🥅 No alvo: *${dados.chutesNoAlvo}*
-
-🏠 *${casa}*
-🎯 ${dados.chutesCasa} chutes
-🥅 ${dados.alvoCasa} no alvo
-📊 ${dados.posseCasa}% posse
-⚔️ ${dados.ataquesPerigososCasa} ataques perigosos
-
-✈️ *${fora}*
-🎯 ${dados.chutesFora} chutes
-🥅 ${dados.alvoFora} no alvo
-📊 ${dados.posseFora}% posse
-⚔️ ${dados.ataquesPerigososFora} ataques perigosos
-
-🧠 xG:
-🏠 ${dados.xGCasa.toFixed(2)} x ${dados.xGFora.toFixed(2)} ✈️
-
-🎯 Dentro da área:
-🏠 ${dados.dentroAreaCasa} x ${dados.dentroAreaFora} ✈️
-
-🧱 Bloqueados:
-🏠 ${dados.bloqueadosCasa} x ${dados.bloqueadosFora} ✈️
-
-🚨 Grandes chances:
-🏠 ${dados.grandesChancesCasa} x ${dados.grandesChancesFora} ✈️
-
-🚩 Escanteios 1ºT:
-*${dados.escanteios}*
-
-━━━━━━━━━━━━━━━━━━
-
-🔥 *PRESSÃO IDENTIFICADA*
-
-${resultado.motivos.join("\n")}
-
-━━━━━━━━━━━━━━━━━━
-
-⭐ *SCORE: ${resultado.score}/100*
-
-${classificacao(resultado.score)}
-
-🎯 *PERFIL*
-*PRESSÃO → ESCANTEIOS NO 2º TEMPO*
-
-🚩 Escanteios já ocorridos:
-*IGNORADOS NO SCORE*
-
-⚠️ *Sinal estatístico. Não é garantia de entrada.*
-
-🕐 ${ULTIMO_CHECK}`;
-
-    // ========================================================
-    // ENVIAR
-    // ========================================================
-
-    if (
-      await sendTelegram(
-        mensagem
-      )
-    ) {
-
-      JOGOS_JA_AVISADOS.add(
-        jogo.id
-      );
-
-      console.log(
-        "✅ SINAL V24 ENVIADO"
-      );
-
-    }
-
-    // ========================================================
-    // LIMPAR CACHE ANTIGO
-    // ========================================================
-
-    if (
-      JOGOS_JA_AVISADOS.size >
-      300
-    ) {
-
-      JOGOS_JA_AVISADOS.clear();
-
-    }
-
-  } catch (e) {
-
-    console.log(
-      `Erro jogo ${jogo.id}:`,
-      e.message
-    );
-
-  }
-
+    fatores:
+      resultado.fatores
+  };
 }
 
 // ============================================================
-// BUSCAR JOGOS AO VIVO
+// TELEGRAM
 // ============================================================
 
-async function verificarJogosAoVivo() {
+async function enviarTelegram(texto) {
 
   if (
-    !podeRodarAgora()
+    !TELEGRAM_TOKEN ||
+    !CHAT_ID
   ) {
-
-    ULTIMO_CHECK =
-      `Dormindo - ${new Date().toLocaleString("pt-BR")} - ${horarioTexto()}`;
-
-    console.log(
-      ULTIMO_CHECK
+    throw new Error(
+      "Telegram não configurado."
     );
-
-    return;
-
   }
 
-  ULTIMO_CHECK =
-    new Date().toLocaleString(
-      "pt-BR"
+  const url =
+    `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
+
+  const response =
+    await axios.post(
+      url,
+      {
+        chat_id: CHAT_ID,
+        text: texto,
+        disable_web_page_preview: true
+      },
+      {
+        timeout: 12000
+      }
     );
 
-  console.log(
-    `\n[${ULTIMO_CHECK}] V24 buscando jogos...`
+  if (
+    !response.data?.ok
+  ) {
+    throw new Error(
+      "Telegram recusou a mensagem."
+    );
+  }
+
+  return true;
+}
+
+// ============================================================
+// MONTAR ALERTA
+// ============================================================
+
+function montarAlerta(resultado) {
+
+  const h =
+    resultado.home;
+
+  const a =
+    resultado.away;
+
+  const fatores =
+    resultado.fatores.length
+      ? resultado.fatores
+          .map(
+            f => `• ${f}`
+          )
+          .join("\n")
+      : "• Pressão geral";
+
+  return (
+`🚨 ELITE RADAR V24
+
+${resultado.classificacao}
+
+⚽ ${resultado.nome}
+📊 Placar: ${resultado.gols}
+⏱️ Intervalo
+
+🎯 SCORE: ${resultado.score}/100
+
+📈 PRESSÃO DO 1º TEMPO
+
+Chutes:
+🏠 ${h.chutes}
+✈️ ${a.chutes}
+
+No alvo:
+🏠 ${h.alvo}
+✈️ ${a.alvo}
+
+Bloqueados:
+🏠 ${h.bloqueados}
+✈️ ${a.bloqueados}
+
+Dentro da área:
+🏠 ${h.dentroArea}
+✈️ ${a.dentroArea}
+
+Posse:
+🏠 ${h.posse}%
+✈️ ${a.posse}%
+
+🚩 Escanteios HT:
+🏠 ${h.escanteios}
+✈️ ${a.escanteios}
+
+⚠️ ESCANTEIOS NÃO ENTRAM NO SCORE.
+
+🔥 FATORES DE PRESSÃO
+
+${fatores}
+
+🎯 MERCADO ANALISADO
+
+PRESSÃO → ESCANTEIOS NO 2º TEMPO
+
+💰 Radar procura oportunidade para
+corrida de escanteios no 2º tempo.
+
+📡 API: API-FOOTBALL
+🔄 Varredura: 20 minutos
+
+⚠️ ALERTA ESTATÍSTICO.
+`
   );
+}
+
+// ============================================================
+// SCAN PRINCIPAL
+// ============================================================
+
+async function executarScan() {
+
+  verificarResetDiario();
+
+  ultimoScan =
+    new Date();
+
+  log("");
+  log(
+    "================================================"
+  );
+  log(
+    "🔎 ELITE RADAR V24 - NOVA VARREDURA"
+  );
+  log(
+    `🕐 BRT: ${horaBRT()}`
+  );
+  log(
+    `📊 API: ${requisicoesHoje}/${MAX_REQUESTS_DAY}`
+  );
+  log(
+    "================================================"
+  );
+
+  if (
+    !podeConsultarAPI()
+  ) {
+    log(
+      "🛑 Scan cancelado por proteção de quota."
+    );
+    return;
+  }
 
   try {
 
-    const data =
-      await getSofascore(
-        "https://api.sofascore.com/api/v1/sport/football/events/live"
-      );
+    // --------------------------------------------------------
+    // 1 - UMA CHAMADA PARA TODOS OS JOGOS AO VIVO
+    // --------------------------------------------------------
 
-    const jogos =
-      data?.events ||
-      [];
+    const aoVivo =
+      await buscarJogosAoVivo();
 
-    console.log(
-      `Ao vivo: ${jogos.length}`
+    log(
+      `⚽ Jogos ao vivo encontrados: ${aoVivo.length}`
     );
 
-    // ========================================================
-    // SOMENTE INTERVALO
-    // ========================================================
+    // --------------------------------------------------------
+    // 2 - SOMENTE INTERVALO
+    // --------------------------------------------------------
 
     const intervalo =
-      jogos.filter(
-        j =>
-          j.status?.code === 31 ||
-          j.status?.type ===
-            "halftime"
+      aoVivo.filter(
+        estaNoIntervalo
       );
 
-    console.log(
-      `Intervalo: ${intervalo.length}`
+    log(
+      `⏸️ Jogos no intervalo: ${intervalo.length}`
     );
 
-    // ========================================================
-    // ANALISAR
-    // ========================================================
-
-    for (
-      const jogo of intervalo
-    ) {
-
-      await analisarJogo(
-        jogo
-      );
-
+    if (!intervalo.length) {
+      return;
     }
 
-    ULTIMO_ERRO =
-      "Nenhum - SofaScore OK";
+    // --------------------------------------------------------
+    // 3 - PEGAR IDS
+    // --------------------------------------------------------
 
-  } catch (e) {
+    const ids =
+      intervalo
+        .map(
+          jogo =>
+            jogo.fixture?.id
+        )
+        .filter(Boolean);
 
-    ULTIMO_ERRO =
-      e.message;
+    if (!ids.length) {
+      return;
+    }
 
-    console.log(
-      "ERRO BUSCAR:",
-      ULTIMO_ERRO
+    // --------------------------------------------------------
+    // 4 - BUSCA EM LOTE
+    // --------------------------------------------------------
+
+    const detalhes =
+      await buscarDetalhesEmLote(
+        ids
+      );
+
+    log(
+      `📦 Jogos detalhados: ${detalhes.length}`
     );
 
+    // --------------------------------------------------------
+    // 5 - ANALISAR
+    // --------------------------------------------------------
+
+    for (
+      const jogo of detalhes
+    ) {
+
+      jogosAnalisados++;
+
+      try {
+
+        const resultado =
+          analisarJogo(jogo);
+
+        if (!resultado) {
+          continue;
+        }
+
+        candidatosEncontrados++;
+
+        log(
+          `🎯 CANDIDATO: ${resultado.nome} | ${resultado.score}`
+        );
+
+        // ----------------------------------------------------
+        // EVITAR DUPLICIDADE
+        // ----------------------------------------------------
+
+        if (
+          JOGOS_JA_AVISADOS.has(
+            resultado.id
+          )
+        ) {
+          log(
+            `⏭️ Já avisado: ${resultado.id}`
+          );
+          continue;
+        }
+
+        // ----------------------------------------------------
+        // TELEGRAM
+        // ----------------------------------------------------
+
+        const alerta =
+          montarAlerta(
+            resultado
+          );
+
+        await enviarTelegram(
+          alerta
+        );
+
+        JOGOS_JA_AVISADOS.add(
+          resultado.id
+        );
+
+        alertasEnviados++;
+
+        log(
+          `📨 ALERTA ENVIADO: ${resultado.nome}`
+        );
+
+      } catch (error) {
+
+        ultimoErro =
+          `Análise: ${error.message}`;
+
+        log(
+          "❌ Erro analisando jogo:",
+          error.message
+        );
+      }
+    }
+
+  } catch (error) {
+
+    ultimoErro =
+      error.message;
+
+    log(
+      "❌ ERRO NO SCAN:",
+      error.message
+    );
   }
 
+  log(
+    `📊 Consumo: ${requisicoesHoje}/${MAX_REQUESTS_DAY}`
+  );
+
+  log(
+    "================================================"
+  );
 }
 
 // ============================================================
 // RELATÓRIO DIÁRIO
 // ============================================================
 
-async function verificarRelatorioDiario() {
+async function enviarRelatorioDiario() {
 
-  const agora =
-    agoraBrasil();
+  const texto =
+`📊 ELITE RADAR V24
+RELATÓRIO DIÁRIO
 
-  const hora =
-    agora.getHours();
-
-  const minutos =
-    agora.getMinutes();
-
-  const diaAtual =
-    `${agora.getFullYear()}-${agora.getMonth() + 1}-${agora.getDate()}`;
-
-  // ----------------------------------------------------------
-  // NOVO DIA
-  // ----------------------------------------------------------
-
-  if (
-    DIA_RELATORIO !==
-    diaAtual
-  ) {
-
-    RELATORIO_ENVIADO_HOJE =
-      false;
-
-    DIA_RELATORIO =
-      diaAtual;
-
-    TOTAL_ANALISADOS =
-      0;
-
-    TOTAL_CANDIDATOS =
-      0;
-
-    TOTAL_ENVIADOS =
-      0;
-
-    TOTAL_ERROS_403 =
-      0;
-
-  }
-
-  // ----------------------------------------------------------
-  // 23:00 ATÉ 23:04
-  // ----------------------------------------------------------
-
-  if (
-    hora === 23 &&
-    minutos >= 0 &&
-    minutos <= 4 &&
-    !RELATORIO_ENVIADO_HOJE
-  ) {
-
-    const mensagem =
-`📊 *ELITE RADAR V24 — RELATÓRIO DIÁRIO*
-
-📅 ${agora.toLocaleDateString("pt-BR")}
+📅 ${dataBRT()}
 
 🔎 Jogos analisados:
-*${TOTAL_ANALISADOS}*
+${jogosAnalisados}
 
 🎯 Candidatos:
-*${TOTAL_CANDIDATOS}*
+${candidatosEncontrados}
 
-🚨 Sinais enviados:
-*${TOTAL_ENVIADOS}*
+📨 Alertas enviados:
+${alertasEnviados}
 
-⭐ Score mínimo:
-*${SCORE_MINIMO}*
+📡 Requisições API:
+${requisicoesHoje}/${MAX_REQUESTS_DAY}
 
-🎯 Estratégia:
-*PRESSÃO → ESCANTEIOS 2º TEMPO*
+🟢 Restantes no controle interno:
+${Math.max(
+  0,
+  MAX_REQUESTS_DAY -
+  requisicoesHoje
+)}
 
-📊 Fatores analisados:
-*chutes*
-*no alvo*
-*posse*
-*ataques perigosos*
-*xG*
-*dentro da área*
-*bloqueados*
-*grandes chances*
-*placar*
+🎯 Score mínimo:
+${SCORE_MINIMO}
 
-🚩 Escanteios do 1º tempo:
-*IGNORADOS NO SCORE*
+🚩 Escanteios HT:
+IGNORADOS NO SCORE
 
-⏱️ Varredura:
-*a cada 20 minutos*
+🔄 Varredura:
+20 minutos
 
 🛡️ Proteções:
-*volume mínimo + placar + anti-spam*
+${protecoes}
 
-🛡️ 403 detectados:
-*${TOTAL_ERROS_403}*
+🚫 Erros 403:
+${erros403}
 
 ⚠️ Último erro:
-${textoSeguro(ULTIMO_ERRO)}
+${ultimoErro || "Nenhum"}
 
-🕚 Relatório automático — 23h BRT`;
+📡 Fonte:
+API-FOOTBALL
+`;
 
-    const ok =
-      await sendTelegram(
-        mensagem
-      );
+  try {
 
-    if (ok) {
+    await enviarTelegram(
+      texto
+    );
 
-      RELATORIO_ENVIADO_HOJE =
-        true;
+    log(
+      "📊 Relatório diário enviado."
+    );
 
-      console.log(
-        "📊 RELATÓRIO 23H ENVIADO"
-      );
+  } catch (error) {
 
-    }
-
+    log(
+      "❌ Falha no relatório:",
+      error.message
+    );
   }
-
 }
 
 // ============================================================
-// ROTINAS
+// CONTROLE DO HORÁRIO
 // ============================================================
+
+function estaNoHorarioRadar() {
+
+  const agora =
+    new Date();
+
+  const hora =
+    Number(
+      new Intl.DateTimeFormat(
+        "en-US",
+        {
+          timeZone:
+            "America/Sao_Paulo",
+          hour:
+            "2-digit",
+          hour12:
+            false
+        }
+      ).format(agora)
+    );
+
+  const dia =
+    new Intl.DateTimeFormat(
+      "en-US",
+      {
+        timeZone:
+          "America/Sao_Paulo",
+        weekday:
+          "short"
+      }
+    ).format(agora);
+
+  const fimDeSemana =
+    dia === "Sat" ||
+    dia === "Sun";
+
+  if (fimDeSemana) {
+    return (
+      hora >= 8 &&
+      hora < 24
+    );
+  }
+
+  return (
+    hora >= 12 &&
+    hora < 24
+  );
+}
+
+// ============================================================
+// LOOP PRINCIPAL
+// ============================================================
+
+async function loopRadar() {
+
+  try {
+
+    if (
+      estaNoHorarioRadar()
+    ) {
+      await executarScan();
+    } else {
+
+      log(
+        `⏰ Fora do horário do Radar. BRT ${horaBRT()}`
+      );
+    }
+
+  } catch (error) {
+
+    ultimoErro =
+      error.message;
+
+    log(
+      "❌ LOOP:",
+      error.message
+    );
+  }
+
+  proximoScan =
+    new Date(
+      Date.now() +
+      INTERVALO_SCAN_MS
+    );
+
+  setTimeout(
+    loopRadar,
+    INTERVALO_SCAN_MS
+  );
+}
+
+// ============================================================
+// RELATÓRIO AUTOMÁTICO
+// ============================================================
+
+let ultimoDiaRelatorio = null;
 
 setInterval(
-  verificarJogosAoVivo,
-  INTERVALO_MINUTOS *
-    60 *
-    1000
+  async () => {
+
+    const agora =
+      new Date();
+
+    const partes =
+      new Intl.DateTimeFormat(
+        "en-US",
+        {
+          timeZone:
+            "America/Sao_Paulo",
+          hour:
+            "2-digit",
+          minute:
+            "2-digit",
+          hour12:
+            false
+        }
+      ).formatToParts(agora);
+
+    const hora =
+      Number(
+        partes.find(
+          p => p.type === "hour"
+        )?.value || 0
+      );
+
+    const minuto =
+      Number(
+        partes.find(
+          p => p.type === "minute"
+        )?.value || 0
+      );
+
+    const hoje =
+      dataBRT();
+
+    if (
+      hora === 23 &&
+      minuto < 2 &&
+      ultimoDiaRelatorio !== hoje
+    ) {
+
+      ultimoDiaRelatorio =
+        hoje;
+
+      await enviarRelatorioDiario();
+    }
+
+  },
+  30 * 1000
 );
-
-setInterval(
-  verificarRelatorioDiario,
-  30 *
-    1000
-);
-
-// ============================================================
-// PRIMEIRA EXECUÇÃO
-// ============================================================
-
-verificarJogosAoVivo();
-
-verificarRelatorioDiario();
 
 // ============================================================
 // STATUS
@@ -2134,71 +1675,73 @@ app.get(
   "/",
   (req, res) => {
 
+    verificarResetDiario();
+
     res.json({
+      projeto:
+        "ELITE RADAR V24",
 
       status:
-        "ELITE RADAR V24 ONLINE",
+        "online",
 
-      versao:
-        "V24",
+      fonte:
+        "API-FOOTBALL",
+
+      efo_ids_configurado:
+        !!API_KEY,
+
+      telegram_configurado:
+        !!(
+          TELEGRAM_TOKEN &&
+          CHAT_ID
+        ),
+
+      requisicoes_hoje:
+        requisicoesHoje,
+
+      limite_interno:
+        MAX_REQUESTS_DAY,
+
+      restantes:
+        Math.max(
+          0,
+          MAX_REQUESTS_DAY -
+          requisicoesHoje
+        ),
+
+      intervalo_scan:
+        "20 minutos",
 
       score_minimo:
         SCORE_MINIMO,
 
-      ultimo_check:
-        ULTIMO_CHECK,
+      jogos_analisados:
+        jogosAnalisados,
 
-      total_enviados:
-        TOTAL_ENVIADOS,
+      candidatos:
+        candidatosEncontrados,
 
-      total_analisados:
-        TOTAL_ANALISADOS,
-
-      total_candidatos:
-        TOTAL_CANDIDATOS,
-
-      jogos_avistados:
-        JOGOS_JA_AVISADOS.size,
-
-      ultimo_erro:
-        ULTIMO_ERRO,
-
-      ultimo_status_api:
-        ULTIMO_STATUS_API,
+      alertas_enviados:
+        alertasEnviados,
 
       erros_403:
-        TOTAL_ERROS_403,
+        erros403,
 
-      cooldown_403:
-        Date.now() <
-        BLOQUEADO_ATE,
+      ultimo_scan:
+        ultimoScan,
 
-      efo_ids_configurado:
-        !!EFO_IDS,
+      proximo_scan:
+        proximoScan,
 
-      intervalo:
-        "20 minutos",
+      ultimo_erro:
+        ultimoErro,
 
-      estrategia:
-        "Pressão ofensiva -> escanteios 2º tempo",
+      hora_brt:
+        horaBRT(),
 
-      estatisticas:
-        "Chutes + alvo + posse + ataques perigosos + xG + domínio + placar",
-
-      escanteios_no_score:
-        false,
-
-      horario:
-        "Seg-Sex 12h-00h / Sab-Dom 08h-00h BRT",
-
-      relatorio:
-        "Todos os dias às 23h BRT",
-
-      pode_rodar:
-        podeRodarAgora()
-
+      data_brt:
+        dataBRT()
     });
-
   }
 );
 
@@ -2210,57 +1753,38 @@ app.get(
   "/api-status",
   (req, res) => {
 
+    verificarResetDiario();
+
     res.json({
 
-      online:
-        true,
+      api:
+        "API-FOOTBALL",
 
-      versao:
-        "V24",
+      configurada:
+        !!API_KEY,
 
-      efo_ids:
-        EFO_IDS
-          ? "CONFIGURADO"
-          : "NÃO CONFIGURADO",
+      requisicoes:
+        requisicoesHoje,
 
-      telegram:
-        TOKEN && CHAT_ID
-          ? "CONFIGURADO"
-          : "NÃO CONFIGURADO",
+      limite:
+        MAX_REQUESTS_DAY,
 
-      sofascore:
-        ULTIMO_STATUS_API,
+      restantes:
+        Math.max(
+          0,
+          MAX_REQUESTS_DAY -
+          requisicoesHoje
+        ),
+
+      ultima_resposta:
+        ultimaRespostaAPI,
 
       ultimo_erro:
-        ULTIMO_ERRO,
+        ultimoErro,
 
       erros_403:
-        TOTAL_ERROS_403,
-
-      cooldown:
-        Date.now() <
-        BLOQUEADO_ATE,
-
-      ultimo_check:
-        ULTIMO_CHECK,
-
-      analisados:
-        TOTAL_ANALISADOS,
-
-      candidatos:
-        TOTAL_CANDIDATOS,
-
-      enviados:
-        TOTAL_ENVIADOS,
-
-      cache:
-        CACHE_STATS.size,
-
-      jogos_avistados:
-        JOGOS_JA_AVISADOS.size
-
+        erros403
     });
-
   }
 );
 
@@ -2272,174 +1796,145 @@ app.get(
   "/telegram-test",
   async (req, res) => {
 
-    const ok =
-      await sendTelegram(
-`✅ *ELITE RADAR V24 — TESTE OK*
+    try {
 
-🔥 PRESSÃO INTELIGENTE
+      await enviarTelegram(
+`🟢 ELITE RADAR V24
 
-🎯 Chutes
-🥅 No alvo
-📊 Posse
-⚔️ Ataques perigosos
-🧠 xG
-🎯 Dentro da área
-🧱 Bloqueados
-🚨 Grandes chances
-⚽ Placar
+Teste do Telegram realizado com sucesso.
 
-🚩 Escanteios do 1ºT:
-*IGNORADOS NO SCORE*
-
-⭐ Score mínimo:
-${SCORE_MINIMO}
-
-🎯 Estratégia:
-*PRESSÃO → ESCANTEIOS 2º TEMPO*
-
-⏱️ Varredura:
-20 minutos
-
-🕐 ${ULTIMO_CHECK}`
+📡 API: API-FOOTBALL
+📊 Quota interna: ${requisicoesHoje}/${MAX_REQUESTS_DAY}
+🕐 BRT: ${horaBRT()}`
       );
 
-    res.json({
+      res.json({
+        ok: true
+      });
 
-      ok,
+    } catch (error) {
 
-      total_enviados:
-        TOTAL_ENVIADOS
-
-    });
-
+      res.status(500).json({
+        ok: false,
+        erro:
+          error.message
+      });
+    }
   }
 );
 
 // ============================================================
-// LIMPAR CACHE DE JOGOS AVISADOS
+// LIMPAR CACHE
 // ============================================================
 
 app.get(
   "/limpar-cache",
   (req, res) => {
 
-    const antes =
-      JOGOS_JA_AVISADOS.size;
-
-    JOGOS_JA_AVISADOS.clear();
+    CACHE_FIXTURES.clear();
 
     res.json({
-
-      ok:
-        true,
-
-      antes,
-
-      depois:
-        0
-
+      ok: true,
+      mensagem:
+        "Cache de jogos limpo."
     });
-
   }
 );
 
 // ============================================================
-// LIMPAR CACHE DE ESTATÍSTICAS
+// LIMPAR JOGOS AVISADOS
 // ============================================================
 
 app.get(
   "/limpar-stats-cache",
   (req, res) => {
 
-    const antes =
-      CACHE_STATS.size;
-
-    CACHE_STATS.clear();
+    JOGOS_JA_AVISADOS.clear();
 
     res.json({
-
-      ok:
-        true,
-
-      antes,
-
-      depois:
-        0
-
+      ok: true,
+      mensagem:
+        "Lista de jogos avisados limpa."
     });
-
   }
 );
 
 // ============================================================
-// RESETAR COOLDOWN
+// RESET MANUAL DO CONTADOR LOCAL
+// NÃO ALTERA A QUOTA REAL DA API.
 // ============================================================
 
 app.get(
   "/reset-api",
   (req, res) => {
 
-    BLOQUEADO_ATE =
-      0;
-
-    ULTIMO_ERRO =
-      "Cooldown resetado manualmente";
+    requisicoesHoje = 0;
 
     res.json({
+      ok: true,
 
-      ok:
-        true,
-
-      cooldown:
-        false,
-
-      mensagem:
-        "Cooldown da API resetado"
-
+      aviso:
+        "Contador LOCAL resetado. Isso não reseta a quota real da API-Football."
     });
-
   }
 );
 
 // ============================================================
-// SERVIDOR
+// PORTA
 // ============================================================
 
 app.listen(
   PORT,
   () => {
 
-    console.log(
-      `🚀 ELITE RADAR V24 RODANDO NA PORTA ${PORT}`
+    log(
+      "================================================"
     );
 
-    console.log(
-      `⭐ Score mínimo: ${SCORE_MINIMO}`
+    log(
+      "🚀 ELITE RADAR V24 INICIADO"
     );
 
-    console.log(
-      `⏱️ Varredura: ${INTERVALO_MINUTOS} minutos`
+    log(
+      `🌐 PORTA: ${PORT}`
     );
 
-    console.log(
-      `🚩 Escanteios no score: NÃO`
+    log(
+      `📡 API-FOOTBALL: ${API_KEY ? "CONFIGURADA" : "NÃO CONFIGURADA"}`
     );
 
-    console.log(
-      `🔑 EFO_IDS: ${
-        EFO_IDS
+    log(
+      `📨 TELEGRAM: ${
+        TELEGRAM_TOKEN && CHAT_ID
           ? "CONFIGURADO"
           : "NÃO CONFIGURADO"
       }`
     );
 
-    console.log(
-      `📱 Telegram: ${
-        TOKEN && CHAT_ID
-          ? "CONFIGURADO"
-          : "NÃO CONFIGURADO"
-      }`
+    log(
+      `📊 LIMITE: ${MAX_REQUESTS_DAY}/DIA`
     );
 
+    log(
+      "🔄 INTERVALO: 20 MINUTOS"
+    );
+
+    log(
+      `🎯 SCORE MÍNIMO: ${SCORE_MINIMO}`
+    );
+
+    log(
+      "🚩 ESCANTEIOS HT: IGNORADOS NO SCORE"
+    );
+
+    log(
+      "================================================"
+    );
+
+    // Inicia o Radar após 5 segundos
+    setTimeout(
+      loopRadar,
+      5000
+    );
   }
 );
