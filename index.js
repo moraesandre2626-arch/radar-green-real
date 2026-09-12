@@ -1,1 +1,106 @@
-const express=require('express');const axios=require('axios');const app=express();const PORT=process.env.PORT||10000;let ultimoScan=new Date().toLocaleString('pt-BR');let jogosAoVivo=0;let ultimoErro='V31 HT...';let enviados=new Set();async function enviarTelegram(msg){try{const t=process.env.TELEGRAM_TOKEN;const c=process.env.TELEGRAM_CHAT_ID;if(!t||!c)return;await axios.get(`https://api.telegram.org/bot${t}/sendMessage`,{params:{chat_id:c,text:msg,parse_mode:'HTML'}});}catch(e){}}async function getJogos(){try{const ligas=['bra.1','conmebol.libertadores','conmebol.sudamericana','eng.1','esp.1','ita.1','ger.1'];let todos=[];for(const l of ligas){try{const r=await axios.get(`https://site.api.espn.com/apis/site/v2/sports/soccer/${l}/scoreboard`,{timeout:10000});if(r.data.events)todos=todos.concat(r.data.events);}catch{}}const intervalo=todos.filter(ev=>{try{const s=ev.competitions[0].status.type.name;return s.includes('HALFTIME')||s==='STATUS_HALFTIME';}catch{return false;}});ultimoErro=`OK ${intervalo.length} no INTERVALO ${new Date().toLocaleTimeString('pt-BR')}`;return intervalo.map(ev=>{const comp=ev.competitions[0];const home=comp.competitors.find(c=>c.homeAway==='home');const away=comp.competitors.find(c=>c.homeAway==='away');let sh=0,sa=0,ch=0,dh=0,da=0;try{const sH=comp.competitors[0].statistics||[];const sA=comp.competitors[1].statistics||[];sh=parseInt((sH.find(x=>x.name==='shots')||{}).displayValue)||0;sa=parseInt((sA.find(x=>x.name==='shots')||{}).displayValue)||0;ch=parseInt((sH.find(x=>x.name==='cornerKicks')||{}).displayValue)||0;ch+=parseInt((sA.find(x=>x.name==='cornerKicks')||{}).displayValue)||0;dh=parseInt((sH.find(x=>x.name==='dangerousAttacks')||{}).displayValue)||0;da=parseInt((sA.find(x=>x.name==='dangerousAttacks')||{}).displayValue)||0;}catch{}return{id:ev.id,home:home.team.displayName,away:away.team.displayName,placar:`${home.score}x${away.score}`,hs:parseInt(home.score)||0,as:parseInt(away.score)||0,sh,sa,diff:sh-sa,ch,dh,da};});}catch(e){ultimoErro=e.message;return[];}}async function analisar(){ultimoScan=new Date().toLocaleString('pt-BR');const jogos=await getJogos();jogosAoVivo=jogos.length;console.log(`[V31 HT] ${jogos.length}`);for(const j of jogos){if(enviados.has(j.id))continue;const amasso=Math.abs(j.diff)>=3&&(j.sh>=5||j.sa>=5);const magro=Math.abs(j.hs-j.as)<=1;if(amasso&&magro){const time=j.diff>0?j.home:j.away;const dom=j.diff>0?`(${j.sh}x${j.sa} chutes, ${j.dh}x${j.da} perigosos)`:`(${j.sa}x${j.sh} chutes, ${j.da}x${j.dh} perigosos)`;await enviarTelegram(`📊 <b>RAIO-X 1º TEMPO - INTERVALO V31</b>\n⚽ ${j.home} x ${j.away}\n📊 Placar HT: ${j.placar}\n🔥 <b>${time} AMASSOU no 1º!</b>\n${dom}\n🚩 Cantos HT: ${j.ch}\n💡 Leitura: Amasso total mas placar magro. Pressão e gol no 2ºT! Olho no Over e Cantos 2ºT.`);enviados.add(j.id);}}if(enviados.size>200)enviados.clear();}
+const express = require('express');
+const axios = require('axios');
+const app = express();
+const PORT = process.env.PORT || 10000;
+
+let ultimoScan = new Date().toLocaleString('pt-BR');
+let jogosAoVivo = 0;
+let ultimoErro = 'V31 HT iniciando...';
+let enviados = new Set();
+
+async function enviarTelegram(msg) {
+  try {
+    const t = process.env.TELEGRAM_TOKEN;
+    const c = process.env.TELEGRAM_CHAT_ID;
+    if (!t || !c) return;
+    await axios.get(`https://api.telegram.org/bot${t}/sendMessage`, {
+      params: { chat_id: c, text: msg, parse_mode: 'HTML' }
+    });
+  } catch (e) {}
+}
+
+async function getJogos() {
+  try {
+    const ligas = ['bra.1', 'conmebol.libertadores', 'conmebol.sudamericana', 'eng.1', 'esp.1', 'ita.1', 'ger.1'];
+    let todos = [];
+    for (const l of ligas) {
+      try {
+        const r = await axios.get(`https://site.api.espn.com/apis/site/v2/sports/soccer/${l}/scoreboard`, { timeout: 10000 });
+        if (r.data.events) todos = todos.concat(r.data.events);
+      } catch {}
+    }
+    const intervalo = todos.filter(ev => {
+      try {
+        const s = ev.competitions[0].status.type.name;
+        return s.includes('HALFTIME') || s === 'STATUS_HALFTIME';
+      } catch { return false; }
+    });
+    ultimoErro = `OK ${intervalo.length} no INTERVALO - ${new Date().toLocaleTimeString('pt-BR')}`;
+    return intervalo.map(ev => {
+      const comp = ev.competitions[0];
+      const home = comp.competitors.find(c => c.homeAway === 'home');
+      const away = comp.competitors.find(c => c.homeAway === 'away');
+      let sh = 0, sa = 0, ch = 0, dh = 0, da = 0;
+      try {
+        const sH = comp.competitors[0].statistics || [];
+        const sA = comp.competitors[1].statistics || [];
+        sh = parseInt((sH.find(x => x.name === 'shots') || {}).displayValue) || 0;
+        sa = parseInt((sA.find(x => x.name === 'shots') || {}).displayValue) || 0;
+        ch = parseInt((sH.find(x => x.name === 'cornerKicks') || {}).displayValue) || 0;
+        ch += parseInt((sA.find(x => x.name === 'cornerKicks') || {}).displayValue) || 0;
+        dh = parseInt((sH.find(x => x.name === 'dangerousAttacks') || {}).displayValue) || 0;
+        da = parseInt((sA.find(x => x.name === 'dangerousAttacks') || {}).displayValue) || 0;
+      } catch {}
+      return {
+        id: ev.id,
+        home: home.team.displayName,
+        away: away.team.displayName,
+        placar: `${home.score}x${away.score}`,
+        hs: parseInt(home.score) || 0,
+        as: parseInt(away.score) || 0,
+        sh, sa, diff: sh - sa, ch, dh, da
+      };
+    });
+  } catch (e) {
+    ultimoErro = e.message;
+    return [];
+  }
+}
+
+async function analisar() {
+  ultimoScan = new Date().toLocaleString('pt-BR');
+  const jogos = await getJogos();
+  jogosAoVivo = jogos.length;
+  console.log(`[V31 HT] ${jogos.length}`);
+  for (const j of jogos) {
+    if (enviados.has(j.id)) continue;
+    const amasso = Math.abs(j.diff) >= 3 && (j.sh >= 5 || j.sa >= 5);
+    const magro = Math.abs(j.hs - j.as) <= 1;
+    if (amasso && magro) {
+      const time = j.diff > 0 ? j.home : j.away;
+      const dom = j.diff > 0 ? `(${j.sh}x${j.sa} chutes, ${j.dh}x${j.da} perigosos)` : `(${j.sa}x${j.sh} chutes, ${j.da}x${j.dh} perigosos)`;
+      await enviarTelegram(`📊 <b>RAIO-X 1º TEMPO - INTERVALO V31</b>\n⚽ ${j.home} x ${j.away}\n📊 Placar HT: ${j.placar}\n🔥 <b>${time} AMASSOU no 1º!</b>\n${dom}\n🚩 Cantos HT: ${j.ch}\n💡 Leitura: Amasso total mas placar magro. Pressão e gol no 2ºT! Olho no Over e Cantos 2ºT.`);
+      enviados.add(j.id);
+    }
+  }
+  if (enviados.size > 200) enviados.clear();
+}
+
+app.get('/', (req, res) => {
+  res.json({
+    versao: "V31 RAIO-X HT - CORRIGIDO",
+    ultimo_scan: ultimoScan,
+    jogos_intervalo: jogosAoVivo,
+    erro: ultimoErro,
+    regra: "Só HT + diff 3+ chutes + placar magro"
+  });
+});
+
+app.get('/teste', async (req, res) => {
+  await enviarTelegram(`✅ V31 HT TESTE OK - ${ultimoErro}`);
+  res.send('ok');
+});
+
+setInterval(analisar, 60000);
+analisar();
+app.listen(PORT, () => console.log('V31 HT OK na porta ' + PORT));
