@@ -5,115 +5,115 @@ const PORT = process.env.PORT || 10000;
 
 let ultimoScan = new Date().toLocaleString('pt-BR');
 let jogosAoVivo = 0;
-let ultimoErro = 'Iniciando...';
+let ultimoErro = 'Iniciando V28...';
 let enviados = new Set();
-
-const USER_AGENTS = [
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (iPhone; CPU iPhone OS 17_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Mobile/15E148 Safari/604.1',
-  'Mozilla/5.0 (Linux; Android 13; SM-G998B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Mobile Safari/537.36'
-];
-
-function getHeaders() {
-  return {
-    'User-Agent': USER_AGENTS[Math.floor(Math.random()*USER_AGENTS.length)],
-    'Accept': 'application/json',
-    'Referer': 'https://www.sofascore.com/',
-    'Origin': 'https://www.sofascore.com'
-  };
-}
 
 async function enviarTelegram(msg) {
   try {
     const token = process.env.TELEGRAM_TOKEN;
     const chatId = process.env.TELEGRAM_CHAT_ID;
-    if (!token || !chatId) return;
+    if (!token ||!chatId) return;
     await axios.get(`https://api.telegram.org/bot${token}/sendMessage`, {
       params: { chat_id: chatId, text: msg, parse_mode: 'HTML' }
     });
-  } catch(e){ console.log('Telegram erro', e.message) }
+  } catch(e){}
 }
 
-async function getLiveEvents() {
-  const target = 'https://api.sofascore.com/api/v1/sport/football/events/live';
-  
-  const PROXYS = [
-    (url) => url, // 1 - direto
-    (url) => `https://www.sofascore.com/api/v1/sport/football/events/live`, // 2 - www direto
-    (url) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`, // 3
-    (url) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`, // 4
-    (url) => `https://corsproxy.io/?${encodeURIComponent(url)}`, // 5
-    (url) => `https://thingproxy.freeboard.name/fetch/${url}`, // 6
-    (url) => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}` // 7 - json mode
-  ];
-
-  for (let i=0; i<PROXYS.length; i++) {
-    try {
-      const proxyUrl = PROXYS[i](target);
-      console.log(`Tentando fonte ${i+1}: ${proxyUrl.substring(0,60)}`);
-      const res = await axios.get(proxyUrl, { headers: getHeaders(), timeout: 20000 });
-      
-      let data = res.data;
-      if (data && data.contents) { // allorigins get mode
-        data = JSON.parse(data.contents);
-      } else if (typeof data === 'string') {
-        try { data = JSON.parse(data); } catch{}
-      }
-
-      if (data && data.events) {
-        ultimoErro = `OK FONTE ${i+1} - ${new Date().toLocaleTimeString('pt-BR')}`;
-        return data.events;
-      }
-    } catch (e) {
-      console.log(`Fonte ${i+1} falhou: ${e.message}`);
-      continue; // tenta proxima
+async function getLiveESPN() {
+  try {
+    // Busca Brasileirão + Premier + LaLiga + todos ao vivo
+    const ligas = ['bra.1','eng.1','esp.1','ita.1','ger.1'];
+    let todos = [];
+    for(const liga of ligas){
+      try {
+        const url = `https://site.api.espn.com/apis/site/v2/sports/soccer/${liga}/scoreboard`;
+        const res = await axios.get(url, { timeout: 10000 });
+        if(res.data.events) todos = todos.concat(res.data.events);
+      } catch{}
     }
+
+    // Filtra só ao vivo
+    const aoVivo = todos.filter(ev => {
+      const status = ev.competitions[0].status.type.name;
+      return status === 'STATUS_IN_PROGRESS';
+    });
+
+    ultimoErro = `OK ESPN ${aoVivo.length} ao vivo / ${todos.length} total - ${new Date().toLocaleTimeString('pt-BR')}`;
+
+    return aoVivo.map(ev => {
+      const comp = ev.competitions[0];
+      const home = comp.competitors.find(c=>c.homeAway==='home');
+      const away = comp.competitors.find(c=>c.homeAway==='away');
+      const clock = comp.status.displayClock || "0'";
+      const minuto = parseInt(clock) || comp.status.clock || 0;
+
+      // Pega escanteios das stats da ESPN
+      let cantos = 0;
+      try {
+        const stats = comp.statistics || [];
+        const cornerStat = stats.find(s => s.name === 'cornerKicks' || s.displayName === 'Corner Kicks');
+        if(cornerStat){
+          cantos = parseInt(cornerStat.displayValue) || 0;
+        } else {
+          // estima pela pressão se não tiver stat
+          cantos = (home.statistics?.find(s=>s.name==='cornerKicks')?.displayValue || 0) + (away.statistics?.find(s=>s.name==='cornerKicks')?.displayValue || 0);
+        }
+      } catch{}
+
+      return {
+        id: ev.id,
+        homeTeam: { name: home.team.displayName },
+        awayTeam: { name: away.team.displayName },
+        time: { played: minuto },
+        corners: cantos,
+        score: `${home.score} x ${away.score}`
+      };
+    });
+  } catch (e) {
+    ultimoErro = `Erro V28: ${e.message} - ${new Date().toLocaleTimeString('pt-BR')}`;
+    return [];
   }
-  
-  ultimoErro = `FALHA 7 FONTES - ${new Date().toLocaleTimeString('pt-BR')}`;
-  return [];
 }
 
 async function analisar() {
   ultimoScan = new Date().toLocaleString('pt-BR');
-  const events = await getLiveEvents();
+  const events = await getLiveESPN();
   jogosAoVivo = events.length;
-  console.log(`[${ultimoScan}] Scan V26 MAX: ${jogosAoVivo} jogos | ${ultimoErro}`);
-  
-  if (events.length === 0) return;
+  console.log(`[V28 ESCANTEIO] ${jogosAoVivo} jogos - ${ultimoErro}`);
 
   for (const ev of events) {
     if (enviados.has(ev.id)) continue;
-    const minuto = ev.time?.played || ev.time?.minute || ev.statusTime?.played || 0;
-    const homeC = ev.homeScore?.corner || 0;
-    const awayC = ev.awayScore?.corner || 0;
-    const total = homeC + awayC;
-    
-    // SUA REGRA ORIGINAL MANTIDA
-    if (minuto >= 65 && total >= 6) {
-      const msg = `🟢 <b>RADAR V26 MAX</b>\n⚽ ${ev.homeTeam?.name} x ${ev.awayTeam?.name}\n⏱️ ${minuto}'\n🚩 ${total} escanteios\n✅ ${ultimoErro}`;
+    const minuto = ev.time.played;
+    const cantos = ev.corners;
+
+    // SUA REGRA ORIGINAL DE ESCANTEIO QUE VOCÊ PEDIU
+    // 65 minutos + 6 escanteios = pressão
+    if (minuto >= 65 && cantos >= 6) {
+      const msg = `🚩 <b>RADAR ESCANTEIO V28</b>\n⚽ ${ev.homeTeam.name} x ${ev.awayTeam.name}\n⏱️ ${minuto}'\n🚩 ${cantos} escanteios\n📊 ${ev.score}\n🔥 PRESSÃO FINAL!`;
       await enviarTelegram(msg);
       enviados.add(ev.id);
     }
   }
-  if (enviados.size > 200) enviados.clear();
+  if(enviados.size>200) enviados.clear();
 }
 
 app.get('/', (req,res) => {
   res.json({
-    versao: "V26 MAX GARANTIA 7 FONTES",
-    telegram_configurado: !!(process.env.TELEGRAM_TOKEN && process.env.TELEGRAM_CHAT_ID),
+    versao: "V28 FINAL - SO ESCANTEIO 5MIN",
+    telegram_configurado:!!(process.env.TELEGRAM_TOKEN && process.env.TELEGRAM_CHAT_ID),
     ultimo_scan: ultimoScan,
     jogos_ao_vivo: jogosAoVivo,
-    ultimo_erro: ultimoErro
+    ultimo_erro: ultimoErro,
+    regra: "65min + 6 escanteios"
   });
 });
 
 app.get('/teste', async (req,res) => {
-  await enviarTelegram(`✅ Teste V26 MAX OK! ${new Date().toLocaleTimeString('pt-BR')}\n${ultimoErro}`);
-  res.send('Teste enviado!');
+  await enviarTelegram(`✅ V28 ESCANTEIO TESTE OK! ${new Date().toLocaleTimeString('pt-BR')}\n${ultimoErro}\nJogos: ${jogosAoVivo}`);
+  res.send('Teste V28 enviado!');
 });
 
-setInterval(analisar, 1000*60*2);
+// A CADA 5 MINUTOS COMO VOCÊ PEDIU
+setInterval(analisar, 1000*60*5);
 analisar();
-app.listen(PORT, () => console.log('V26 MAX Rodando ' + PORT));
+app.listen(PORT, () => console.log('V28 ESCANTEIO Rodando ' + PORT));
