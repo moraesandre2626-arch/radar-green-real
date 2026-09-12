@@ -1,11 +1,12 @@
 {
   "name": "radar-green-real",
-  "version": "25.1.0",
+  "version": "1.0.0",
   "main": "index.js",
-  "engines": {
-    "node": "18.x"
+  "scripts": {
+    "start": "node index.js"
   },
   "dependencies": {
-    "express": "^4.18.2"
+    "express": "^4.18.2",
+    "axios": "^1.6.0"
   }
 }
