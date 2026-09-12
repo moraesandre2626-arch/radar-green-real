@@ -54,3 +54,28 @@ async function analisar(){
       const id=ev.id;
       const golH=parseInt(home.score)||0;
       const golA=parseInt(away.score)||0;
+      const placar=golH+'x'+golA;
+      if(status.includes('HALFTIME')){
+        htCount++;
+        if(enviadosHT.has(id)) continue;
+        const placarMagro=Math.abs(golH-golA)<=1;
+        const amasso=(Math.abs(sh-sa)>=2)||(Math.abs(dh-da)>=5)||(Math.abs(ah-aa)>=15);
+        if(amasso&&placarMagro){
+          const time=(sh>=sa)?home.team.displayName:away.team.displayName;
+          memoriaHT[id]=time;
+          await enviarTelegram('📊 RAIO-X V32\n⚽ '+home.team.displayName+' '+placar+' '+away.team.displayName+'\n🔥 '+time+' AMASSOU!\n🎯 Chutes: '+sh+'x'+sa+'\n💥 Perigosos: '+dh+'x'+da+'\n⚔️ Ataques: '+ah+'x'+aa);
+          enviadosHT.add(id);
+        }
+      }
+    }catch{}
+  }
+  jogosAoVivo=htCount;
+  ultimoErro='OK V32 - '+htCount+' HT - '+new Date().toLocaleTimeString('pt-BR');
+  console.log(ultimoErro);
+}
+
+app.get('/',(req,res)=>{res.json({versao:'V32 FINAL - BET365',ultimo_scan:ultimoScan,jogos_intervalo:jogosAoVivo,erro:ultimoErro});});
+app.get('/teste',async(req,res)=>{await enviarTelegram('✅ TESTE V32 OK - '+ultimoErro);res.send('ok v32');});
+setInterval(analisar,40000);
+analisar();
+app.listen(PORT,()=>console.log('V32 NO AR '+PORT));
