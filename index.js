@@ -5,7 +5,7 @@ const PORT = process.env.PORT || 10000;
 
 let ultimoScan = new Date().toLocaleString('pt-BR');
 let jogosAoVivo = 0;
-let ultimoErro = 'Iniciando V32...';
+let ultimoErro = 'Iniciando V33...';
 let enviadosHT = new Set();
 let memoriaHT = {};
 
@@ -19,7 +19,11 @@ async function enviarTelegram(msg){
 }
 
 async function getJogos(){
-  const ligas=['bra.1','conmebol.libertadores','conmebol.sudamericana','eng.1','esp.1','ita.1','ger.1','uefa.champions','uefa.europa'];
+  const ligas=[
+    'bra.1','conmebol.libertadores','conmebol.sudamericana',
+    'eng.1','esp.1','ita.1','ger.1','fra.1','por.1','arg.1',
+    'uefa.champions','uefa.europa'
+  ];
   let todos=[];
   for(const l of ligas){
     try{
@@ -63,19 +67,19 @@ async function analisar(){
         if(amasso&&placarMagro){
           const time=(sh>=sa)?home.team.displayName:away.team.displayName;
           memoriaHT[id]=time;
-          await enviarTelegram('📊 RAIO-X V32\n⚽ '+home.team.displayName+' '+placar+' '+away.team.displayName+'\n🔥 '+time+' AMASSOU!\n🎯 Chutes: '+sh+'x'+sa+'\n💥 Perigosos: '+dh+'x'+da+'\n⚔️ Ataques: '+ah+'x'+aa);
+          await enviarTelegram('📊 RAIO-X V33\n⚽ '+home.team.displayName+' '+placar+' '+away.team.displayName+'\n🔥 '+time+' AMASSOU!\n🎯 Chutes: '+sh+'x'+sa+'\n💥 Perigosos: '+dh+'x'+da+'\n⚔️ Ataques: '+ah+'x'+aa);
           enviadosHT.add(id);
         }
       }
     }catch{}
   }
   jogosAoVivo=htCount;
-  ultimoErro='OK V32 - '+htCount+' HT - '+new Date().toLocaleTimeString('pt-BR');
+  ultimoErro='OK V33 - '+htCount+' HT - '+new Date().toLocaleTimeString('pt-BR');
   console.log(ultimoErro);
 }
 
-app.get('/',(req,res)=>{res.json({versao:'V32 FINAL - BET365',ultimo_scan:ultimoScan,jogos_intervalo:jogosAoVivo,erro:ultimoErro});});
-app.get('/teste',async(req,res)=>{await enviarTelegram('✅ TESTE V32 OK - '+ultimoErro);res.send('ok v32');});
+app.get('/',(req,res)=>{res.json({versao:'V33 - 12 LIGAS',ultimo_scan:ultimoScan,jogos_intervalo:jogosAoVivo,erro:ultimoErro,ligas:['BR','Liberta','Sula','ENG','ESP','ITA','GER','FRA','POR','ARG','Champions','Europa']});});
+app.get('/teste',async(req,res)=>{await enviarTelegram('✅ TESTE V33 OK - 12 LIGAS\n'+ultimoErro);res.send('ok v33');});
 setInterval(analisar,40000);
 analisar();
-app.listen(PORT,()=>console.log('V32 NO AR '+PORT));
+app.listen(PORT,()=>console.log('V33 NO AR '+PORT));
