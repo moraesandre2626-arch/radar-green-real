@@ -1,13 +1,85 @@
-const express=require('express');const axios=require('axios');const app=express();const PORT=process.env.PORT||10000;
-let ultimoScan=new Date().toLocaleString('pt-BR');let vivo=0;let erro='Iniciando V34.2...';let enviados=new Set();let hist=[];
-const num=v=>{if(v==null)return 0;if(typeof v=='number')return v;let n=parseFloat(String(v).replace('%','').replace(',','.'));return isFinite(n)?n:0;}
-async function sendTel(m){try{const t=process.env.TELEGRAM_TOKEN||process.env.TOKEN;const c=process.env.TELEGRAM_CHAT_ID||process.env.CHAT_ID;if(!t||!c)return;await axios.get(`https://api.telegram.org/bot${t}/sendMessage`,{params:{chat_id:c,text:m,parse_mode:'HTML'},timeout:10000});}catch(e){}}
-function pStat(s,nomes){if(!Array.isArray(s))return 0;for(let n of nomes){let a=n.toLowerCase();let f=s.find(x=>String(x.name||x.label||x.displayName||'').toLowerCase().includes(a));if(f){let v=num(f.displayValue??f.value);if(v>0)return v;}}return 0;}
-const getS=c=>c.statistics||c.stats||[];const pAP=s=>pStat(s,['dangerous','ataques']);const pCR=s=>pStat(s,['cross','cruzamento']);const pCH=s=>pStat(s,['shot']);const pPO=s=>pStat(s,['possession']);const pES=s=>pStat(s,['corner','escanteio']);
-async function getJogos(){let todos=[];let ligas=['bra.1','eng.1','esp.1','ita.1','ger.1','fra.1','por.1','arg.1','conmebol.libertadores','uefa.champions'];for(let l of ligas){try{let r=await axios.get(`https://site.api.espn.com/apis/site/v2/sports/soccer/${l}/scoreboard`,{timeout:10000});if(r.data?.events) todos=todos.concat(r.data.events);}catch(e){}}return todos;}
-async function analisar(){ultimoScan=new Date().toLocaleString('pt-BR');try{let todos=await getJogos();let ht=0;let debug='';for(let ev of todos){try{let comp=ev.competitions[0];if(!comp)continue;if(!String(comp.status.type.name||'').includes('HALFTIME'))continue;ht++;let home=comp.competitors.find(c=>c.homeAway=='home');let away=comp.competitors.find(c=>c.homeAway=='away');if(!home||!away)continue;let sH=getS(home),sA=getS(away);let sh=pCH(sH),sa=pCH(sA),apH=pAP(sH),apA=pAP(sA),crH=pCR(sH),crA=pCR(sA),poH=pPO(sH),esH=pES(sH),esA=pES(sA);let id=String(ev.id);if(enviados.has(id))continue;let golH=parseInt(home.score)||0,golA=parseInt(away.score)||0;let placar=`${golH}x${golA}`;debug=`${home.team.abbreviation} ${placar} ${away.team.abbreviation} CH${sh}x${sa} AP${apH}x${apA} CR${crH}x${crA} POS${poH}%`;let diff=sh-sa;let amasso=(Math.abs(diff)>=3)||(Math.abs(diff)>=2&&poH>=58)||(apH+apA>=18)||(crH+crA>=8);let perdendoGoleando=false;if(golH>=2&&golA==0&&sa>sh&&apA>apH)perdendoGoleando=true;if(golA>=2&&golH==0&&sh>sa&&apH>apA)perdendoGoleando=true;if(amasso||perdendoGoleando){let timePress=sh>=sa?home.team.displayName:away.team.displayName;if(perdendoGoleando){timePress=sh>sa?home.team.displayName:away.team.displayName;}let motivo=perdendoGoleando?`REACAO! ${timePress} perdendo ${placar} mas AMASSANDO`:`${timePress} AMASSOU`;await sendTel(`📊 RAIO-X V34.2 SEM FILTRO PLACAR\n⚽ ${home.team.displayName} ${placar} ${away.team.displayName}\n🔥 ${motivo}\n🎯 Chutes: ${sh}x${sa}\n🔥 AP: ${apH}x${apA}\n📐 Cruz: ${crH}x${crA}\n📐 Esc: ${esH}x${esA}\n📈 Posse: ${poH}%\n💰 TENDENCIA: GOL + ESCANTEIOS 2T - ${timePress} vai pra cima!`);enviados.add(id);hist.push({jogo:`${home.team.displayName} x ${away.team.displayName} ${placar}`,motivo:motivo});}}catch(e){}}vivo=ht;erro=`OK V34.2 SEM PLACAR - ${ht} HT - ${debug} - ${new Date().toLocaleTimeString('pt-BR')}`;console.log(erro);}catch(e){erro=`ERRO ${e.message}`;}}
-async function rel(){let agora=new Date().toLocaleString('en-US',{timeZone:'America/Sao_Paulo'});let h=new Date(agora);if(h.getHours()==0&&h.getMinutes()==0){let msg=hist.length>0?`📊 RELATORIO ${h.toLocaleDateString('pt-BR')} V34.2 SEM PLACAR\n🚀 ${hist.length} alertas\n\n${hist.map(x=>`${x.jogo} - ${x.motivo}`).join('\n')}`:`📊 RELATORIO ${h.toLocaleDateString('pt-BR')} - Nenhum alerta - Radar OK V34.2`;await sendTel(msg);hist=[];enviados.clear();}}
-app.get('/',(req,res)=>res.json({versao:'V34.2 SEM FILTRO PLACAR - SUA IDEIA',scan:ultimoScan,ht:vivo,ultimo:erro,hoje:hist.length,relatorio:'00:00 BRT'}));
-app.get('/teste',async(req,res)=>{await sendTel(`✅ TESTE V34.2 OK - SEM FILTRO PLACAR - ${erro}`);res.send('ok v34.2');});
-setInterval(analisar,30000);setInterval(rel,60000);analisar();rel();
-app.listen(PORT,()=>console.log('V34.2 ON '+PORT));
+# ROBÔ GOL 2T - V34.3 RIGOROSA - MORAES
+# Filtro: Até 2 gols HT + Pressão Alta + Liga BR/EU/HOL
+
+import time
+from datetime import datetime
+
+# CONFIG V34.3
+LIGAS_PERMITIDAS = [
+    "bra.1", "bra.2", "libertadores", "sudamericana", # BR
+    "eng.1", "esp.1", "ger.1", "ita.1", "fra.1", # Top 5 Europa
+    "ned.1"  # HOLANDESA ADICIONADA
+]
+
+FILTROS_V34_3 = {
+    "max_gols_ht": 2,  # Até 2 gols: 0-0, 1-0, 0-1, 1-1, 2-0, 0-2
+    "min_ataques_perigosos_total": 45,
+    "min_ataques_perigosos_time_precisa": 18,
+    "min_chutes_gol_time_precisa": 3,
+    "min_total_chutes_jogo": 15,
+    "minuto_alerta": (44, 52) # HT
+}
+
+def checa_jogo_v34_3(jogo):
+    """
+    jogo = dict com: liga, placar_ht, ataques_perigosos, chutes, chutes_gol
+    """
+    # 1. Filtro de Liga
+    if jogo['liga'] not in LIGAS_PERMITIDAS:
+        return False
+
+    # 2. Filtro de Placar - ATÉ 2 GOLS
+    gols_ht = jogo['gols_casa_ht'] + jogo['gols_fora_ht']
+    if gols_ht > FILTROS_V34_3['max_gols_ht']:
+        return False
+    
+    # 3. Filtro de Jogo Morto
+    total_chutes = jogo['chutes_casa'] + jogo['chutes_fora']
+    if total_chutes < FILTROS_V34_3['min_total_chutes_jogo']:
+        return False
+
+    # 4. Filtro de Pressão RIGOROSO
+    total_ataques_perigosos = jogo['ataques_perigosos_casa'] + jogo['ataques_perigosos_fora']
+    if total_ataques_perigosos < FILTROS_V34_3['min_ataques_perigosos_total']:
+        return False
+
+    # Identifica quem precisa do gol
+    if jogo['gols_casa_ht'] < jogo['gols_fora_ht']:
+        time_precisa = 'casa'
+        ataques_precisa = jogo['ataques_perigosos_casa']
+        chutes_gol_precisa = jogo['chutes_gol_casa']
+    elif jogo['gols_fora_ht'] < jogo['gols_casa_ht']:
+        time_precisa = 'fora'
+        ataques_precisa = jogo['ataques_perigosos_fora']
+        chutes_gol_precisa = jogo['chutes_gol_fora']
+    else: # 0x0 ou 1x1
+        # No empate, pega quem tem mais ataque
+        if jogo['ataques_perigosos_casa'] >= jogo['ataques_perigosos_fora']:
+            ataques_precisa = jogo['ataques_perigosos_casa']
+            chutes_gol_precisa = jogo['chutes_gol_casa']
+        else:
+            ataques_precisa = jogo['ataques_perigosos_fora']
+            chutes_gol_precisa = jogo['chutes_gol_fora']
+
+    if ataques_precisa < FILTROS_V34_3['min_ataques_perigosos_time_precisa']:
+        return False
+        
+    if chutes_gol_precisa < FILTROS_V34_3['min_chutes_gol_time_precisa']:
+        return False
+
+    # PASSOU EM TUDO = ALERTA OURO
+    return True
+
+def enviar_alerta_telegram(jogo):
+    placar = f"{jogo['gols_casa_ht']}x{jogo['gols_fora_ht']} HT"
+    msg = f"🚨 V34.3 OURO - ATÉ 2 GOLS\n\n{jogo['casa']} {placar} {jogo['fora']}\nLiga: {jogo['liga']}\nPressão: {jogo['ataques_perigosos_casa']+jogo['ataques_perigosos_fora']} ataques perigosos\nChutes: {jogo['chutes_casa']+jogo['chutes_fora']} (No gol: {jogo['chutes_gol_casa']+jogo['chutes_gol_fora']})\n\n👉 Over 0.5 HT | Mais 1 gol no 2T"
+    # sua funcao de envio aqui
+    print(f"[{datetime.now()}] ALERTA ENVIADO: {msg}")
+
+# LOOP PRINCIPAL
+# while True:
+#   jogos_ht = buscar_jogos_espn()
+#   for jogo in jogos_ht:
+#       if checa_jogo_v34_3(jogo):
+#           enviar_alerta_telegram(jogo)
+#   time.sleep(60)
