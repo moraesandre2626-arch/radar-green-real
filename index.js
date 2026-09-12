@@ -70,4 +70,27 @@ async function scan() {
     if (!dados) continue;
     if (dados.corners >= 6 && minuto >= 65) {
       candidatos++;
-      const msg = `🟢 *GREEN V25.1*\n\n⚽ ${ev.homeTeam?.name} x ${ev.awayTeam?.name}\n🏆 ${ev.tournament?.name}\n⏱️ ${minuto}' - ${ev.homeScore?.current}x${ev.awayScore?.current}\n🚩 Esc
+      const msg = `🟢 *GREEN V25.1*\n\n⚽ ${ev.homeTeam?.name} x ${ev.awayTeam?.name}\n🏆 ${ev.tournament?.name}\n⏱️ ${minuto}' - ${ev.homeScore?.current}x${ev.awayScore?.current}\n🚩 Escanteios: ${dados.corners}\n⚠️ Perigosos: ${dados.dangerous}`;
+      await enviarTelegram(msg);
+    }
+  }
+  candidatosEncontrados = candidatos;
+  ultimoScan = new Date().toLocaleString('pt-BR');
+}
+app.get('/', (req,res)=>{
+  res.json({
+    versao:'V25.1 SOFASCORE FREE FIX',
+    telegram_configurado:!!(TELEGRAM_TOKEN && TELEGRAM_CHAT_ID),
+    ultimo_scan: ultimoScan,
+    jogos_ao_vivo: jogosAnalisados,
+    candidatos: candidatosEncontrados,
+    ultimo_erro: ultimoErro
+  });
+});
+app.get('/teste', async (req,res)=>{
+  await enviarTelegram('✅ Teste V25.1 OK! Agora vai chegar! 🚀');
+  res.send('Teste enviado');
+});
+setInterval(scan, 3*60*1000);
+scan();
+app.listen(PORT, ()=>console.log(`Rodando ${PORT}`));
