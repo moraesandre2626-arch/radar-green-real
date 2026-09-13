@@ -2,6 +2,5 @@
   "name": "radar-green-real",
   "version": "1.0.0",
   "type": "commonjs",
-  "main": "index.js",
-  "dependencies": {}
+  "main": "index.js"
 }
