@@ -13,7 +13,9 @@ const FILTROS = {
   min_chutes_gol_time_precisa: 2,
   min_total_chutes_jogo: 8,
   minuto_minimo: 40,
-  minuto_maximo: 55
+  minuto_maximo: 55,
+  posse_esteril_limite: 58,
+  min_pressao_score: 6
 };
 let ultimoScan = null;
 let totalAprovados = 0;
@@ -60,28 +62,45 @@ function pegaStat(S, nomes){
   }catch(e){}
   return raio;
 }
-function checaJogo(jogo){
-  if(!LIGAS_PERMITIDAS.includes(jogo.liga)) return {aprovado:false};
-  if(Math.abs(jogo.gols_casa-jogo.gols_fora)>FILTROS.max_diferenca_gols) return {aprovado:false};
-  if((jogo.chutes_casa+jogo.chutes_fora)<FILTROS.min_total_chutes_jogo) return {aprovado:false};
-  let timePrecisa='', chutesPrecisa=0;
-  if(jogo.gols_casa<jogo.gols_fora){ timePrecisa=jogo.nome_casa; chutesPrecisa=jogo.alvo_casa; }
-  else if(jogo.gols_fora<jogo.gols_casa){ timePrecisa=jogo.nome_fora; chutesPrecisa=jogo.alvo_fora; }
-  else { timePrecisa=jogo.alvo_casa>=jogo.alvo_fora?jogo.nome_casa:jogo.nome_fora; chutesPrecisa=Math.max(jogo.alvo_casa,jogo.alvo_fora); }
-  if(chutesPrecisa<FILTROS.min_chutes_gol_time_precisa) return {aprovado:false};
-  return {aprovado:true, timePrecisa, chutesPrecisa, totalChutes:jogo.chutes_casa+jogo.chutes_fora};
+function checaJogo(jogo, raio){
+  if(!LIGAS_PERMITIDAS.includes(jogo.liga)) return {aprovado:false, motivo:'liga'};
+  if(Math.abs(jogo.gols_casa-jogo.gols_fora)>FILTROS.max_diferenca_gols) return {aprovado:false, motivo:'placar'};
+  if((jogo.chutes_casa+jogo.chutes_fora)<FILTROS.min_total_chutes_jogo) return {aprovado:false, motivo:'chutes'};
+  let timePrecisa='', chutesPrecisa=0, posseTime=0, cruzTime=0, escTime=0, apTime=0;
+  if(jogo.gols_casa<jogo.gols_fora){ timePrecisa=jogo.nome_casa; chutesPrecisa=jogo.alvo_casa; posseTime=raio.posseCasa; cruzTime=raio.cruzCasa; escTime=raio.escCasa; apTime=raio.apCasa||0; }
+  else if(jogo.gols_fora<jogo.gols_casa){ timePrecisa=jogo.nome_fora; chutesPrecisa=jogo.alvo_fora; posseTime=raio.posseFora; cruzTime=raio.cruzFora; escTime=raio.escFora; apTime=raio.apFora||0; }
+  else {
+    const casaMelhor = jogo.alvo_casa>=jogo.alvo_fora;
+    timePrecisa=casaMelhor?jogo.nome_casa:jogo.nome_fora;
+    chutesPrecisa=Math.max(jogo.alvo_casa,jogo.alvo_fora);
+    posseTime=casaMelhor?raio.posseCasa:raio.posseFora;
+    cruzTime=casaMelhor?raio.cruzCasa:raio.cruzFora;
+    escTime=casaMelhor?raio.escCasa:raio.escFora;
+    apTime=casaMelhor?raio.apCasa||0:raio.apFora||0;
+  }
+  if(chutesPrecisa<FILTROS.min_chutes_gol_time_precisa) return {aprovado:false, motivo:'alvo'};
+  const posseTotal = raio.posseCasa+raio.posseFora;
+  const possePct = posseTotal>0? Math.round((posseTime/posseTotal)*100) : 50;
+  const scorePressao = cruzTime + (escTime*2) + (apTime/10);
+  if(possePct >= FILTROS.posse_esteril_limite && scorePressao < FILTROS.min_pressao_score){
+    return {aprovado:false, motivo:`posse esteril ${possePct}% score ${scorePressao.toFixed(1)}`};
+  }
+  let zonaPressao = 'Meio';
+  if(cruzTime>=8 || (cruzTime>=5 && escTime>=2)) zonaPressao = `Lateral (${cruzTime} cruz)`;
+  else if(escTime>=3) zonaPressao = `Abafa Área (${escTime} esc)`;
+  else if(apTime>=15) zonaPressao = `Meio-Perigoso (${apTime} AP)`;
+  return {aprovado:true, timePrecisa, chutesPrecisa, totalChutes:jogo.chutes_casa+jogo.chutes_fora, possePct, scorePressao, zonaPressao};
 }
-async function enviarTelegram(jogo, analise){
+async function enviarTelegram(jogo, analise, raio){
   if(!TELEGRAM_TOKEN||!CHAT_ID) return false;
-  const raio = await buscarRaioXCompleto(jogo.liga, jogo.id);
   const pCasa = (raio.posseCasa+raio.posseFora)>0? Math.round((raio.posseCasa/(raio.posseCasa+raio.posseFora))*100) : 50;
   const linhaAP = raio.temAP? `🔥 Ataques Perigosos: ${raio.apCasa??0}x${raio.apFora??0}\n` : ``;
   const linhaCruz = raio.temCruz? `↗️ Cruzamentos: ${raio.cruzCasa}x${raio.cruzFora}\n` : ``;
-  const msg = `🚨 RAIO-X GOL 2T — V34.3\n\n🏆 ${jogo.liga.toUpperCase()}\n⚽ ${jogo.nome_casa} ${jogo.gols_casa}x${jogo.gols_fora} ${jogo.nome_fora}\n⏱️ ${jogo.minutoTexto}\n\n📊 ESTATÍSTICAS HT:\n🥅 Chutes: ${raio.chutesCasa}x${raio.chutesFora} (Total: ${analise.totalChutes})\n🎯 No Alvo: ${raio.alvoCasa}x${raio.alvoFora}\n${linhaAP}${linhaCruz}🚩 Escanteios: ${raio.escCasa}x${raio.escFora}\n📊 Posse: ${pCasa}% x ${100-pCasa}%\n🟨 Amarelos: ${raio.amarelosCasa}x${raio.amarelosFora}\n\n🎯 Precisa: ${analise.timePrecisa} (${analise.chutesPrecisa} no alvo)\n✅ FILTRO: 2x0 MANDA | 3x0 NÃO`;
+  const msg = `🚨 RAIO-X GOL 2T — V34.4 ANTI-ESTERIL\n\n🏆 ${jogo.liga.toUpperCase()}\n⚽ ${jogo.nome_casa} ${jogo.gols_casa}x${jogo.gols_fora} ${jogo.nome_fora}\n⏱️ ${jogo.minutoTexto}\n\n📊 ESTATÍSTICAS HT:\n🥅 Chutes: ${raio.chutesCasa}x${raio.chutesFora} (Total: ${analise.totalChutes})\n🎯 No Alvo: ${raio.alvoCasa}x${raio.alvoFora}\n${linhaAP}${linhaCruz}🚩 Escanteios: ${raio.escCasa}x${raio.escFora}\n📊 Posse: ${pCasa}% x ${100-pCasa}%\n🟨 Amarelos: ${raio.amarelosCasa}x${raio.amarelosFora}\n\n📍 PRESSÃO: ${analise.zonaPressao}\n📈 Score Pressão: ${analise.scorePressao.toFixed(1)} | Posse time: ${analise.possePct}%\n\n🎯 Precisa: ${analise.timePrecisa} (${analise.chutesPrecisa} no alvo)\n✅ FILTRO: 2x0 MANDA | 3x0 NÃO | Anti-Toca-Toca`;
   try{
     const r = await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({chat_id:CHAT_ID,text:msg})});
     const d = await r.json(); if(!d.ok) throw new Error(d.description);
-    totalEnviados++; console.log(`📨 Enviado: ${jogo.nome_casa} x ${jogo.nome_fora}`); return true;
+    totalEnviados++; console.log(`📨 Enviado: ${jogo.nome_casa} x ${jogo.nome_fora} | ${analise.zonaPressao}`); return true;
   }catch(e){ totalErros++; console.log(`❌ Telegram: ${e.message}`); return false; }
 }
 async function buscarJogosESPN(){
@@ -100,8 +119,8 @@ async function buscarJogosESPN(){
           await sleep(400);
           const raioTemp = await buscarRaioXCompleto(liga, ev.id);
           const jogo={id:String(ev.id),liga,nome_casa:casa?.team?.displayName||'Casa',nome_fora:fora?.team?.displayName||'Fora',gols_casa:numero(casa.score),gols_fora:numero(fora.score),chutes_casa:raioTemp.chutesCasa,chutes_fora:raioTemp.chutesFora,alvo_casa:raioTemp.alvoCasa,alvo_fora:raioTemp.alvoFora,minuto,minutoTexto:status==='STATUS_HALFTIME'?'INTERVALO':`${Math.floor(minuto)}'`};
-          const analise=checaJogo(jogo); if(!analise.aprovado) continue;
-          totalAprovados++; aprovados.push({jogo,analise});
+          const analise=checaJogo(jogo, raioTemp); if(!analise.aprovado){ if(analise.motivo?.includes('esteril')) console.log(`🚫 Esteril bloqueado: ${jogo.nome_casa} ${jogo.gols_casa}x${jogo.gols_fora} ${jogo.nome_fora} - ${analise.motivo}`); continue; }
+          totalAprovados++; aprovados.push({jogo,analise,raio:raioTemp});
         }catch(e){}
       }
     }catch(e){ totalErros++; }
@@ -109,15 +128,15 @@ async function buscarJogosESPN(){
   return aprovados;
 }
 async function executarRadar(){
-  ultimoScan=new Date().toISOString(); console.log(`\n🔎 Radar varrendo...`);
+  ultimoScan=new Date().toISOString(); console.log(`\n🔎 Radar V34.4 varrendo...`);
   for(const [id,t] of enviados.entries()) if(Date.now()-t>3*60*60*1000) enviados.delete(id);
   try{
-    const res=await buscarJogosESPN(); if(!res.length){ console.log('Nenhum aprovado.'); return; }
-    for(const {jogo,analise} of res){
+    const res=await buscarJogosESPN(); if(!res.length){ console.log('Nenhum aprovado (filtro anti-esteril ativo).'); return; }
+    for(const {jogo,analise,raio} of res){
       const chave=`${jogo.liga}_${jogo.id}_HT`; if(enviados.has(chave)) continue;
-      if(await enviarTelegram(jogo,analise)) enviados.set(chave, Date.now());
+      if(await enviarTelegram(jogo,analise,raio)) enviados.set(chave, Date.now());
     }
   }catch(e){ console.log(`❌ Radar: ${e.message}`); }
 }
-const server = http.createServer((req,res)=>{ res.writeHead(200,{'Content-Type':'application/json'}); res.end(JSON.stringify({status:'online',robo:'V34.3 FREE RAIO-X',ultimoScan,aprovados:totalAprovados,enviados:totalEnviados},null,2)); });
-server.listen(PORT, ()=>{ console.log(`🚀 V34.3 ONLINE porta ${PORT}`); executarRadar(); setInterval(executarRadar,60000); });
+const server = http.createServer((req,res)=>{ res.writeHead(200,{'Content-Type':'application/json'}); res.end(JSON.stringify({status:'online',robo:'V34.4 ANTI-ESTERIL + ZONA PRESSAO',ultimoScan,aprovados:totalAprovados,enviados:totalEnviados, filtros:FILTROS},null,2)); });
+server.listen(PORT, ()=>{ console.log(`🚀 V34.4 ONLINE porta ${PORT}`); executarRadar(); setInterval(executarRadar,60000); });
