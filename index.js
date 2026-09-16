@@ -8,7 +8,7 @@ const LIGAS_PERMITIDAS = ["bra.1","bra.2","por.1","eng.1","esp.1","ger.1","ita.1
 const FILTROS = { max_diferenca_gols:2, min_chutes_gol_time_precisa:2, min_total_chutes_jogo:8, minuto_minimo:40, minuto_maximo:55, posse_minima_pressao:60, min_pressao_score:6 };
 
 let ultimoScan=null, totalAprovados=0, totalEnviados=0, totalErros=0;
-let relatorioDia = { data: new Date().toLocaleDateString('pt-BR'), enviados: [] };
+let relatorioDia = { data: new Date().toLocaleDateString('pt-BR'), sinais: [] };
 const enviados = new Map();
 const sleep = ms => new Promise(r=>setTimeout(r,ms));
 
@@ -62,9 +62,11 @@ async function buscarRaioXCompleto(liga,eventId){
         if(ap!==null){raio.apFora=ap; raio.temAP=true;}
       }
     }
-  }catch(e){}
-  return raio;
+    const comp = summary?.header?.competitions?.[0];
+    return { raio, finalCasa: numero(comp?.competitors?.find(c=>c.homeAway==='home')?.score), finalFora: numero(comp?.competitors?.find(c=>c.homeAway==='away')?.score), status: comp?.status?.type?.name };
+  }catch(e){ return { raio, finalCasa:null, finalFora:null, status:null } }
 }
+
 function checaJogo(jogo,raio){
   if(!LIGAS_PERMITIDAS.includes(jogo.liga)) return {aprovado:false};
   if(Math.abs(jogo.gols_casa-jogo.gols_fora)>FILTROS.max_diferenca_gols) return {aprovado:false};
@@ -72,10 +74,10 @@ function checaJogo(jogo,raio){
   const totalPosse=raio.posseCasa+raio.posseFora;
   const posseCasaPct=totalPosse>0?Math.round((raio.posseCasa/totalPosse)*100):50;
   const posseForaPct=100-posseCasaPct;
-  let timePrecisa='',chutesPrecisa=0,posseTime=0,cruzTime=0,escTime=0,apTime=0;
-  if(jogo.gols_casa<jogo.gols_fora){timePrecisa=jogo.nome_casa;chutesPrecisa=jogo.alvo_casa;posseTime=posseCasaPct;cruzTime=raio.cruzCasa;escTime=raio.escCasa;apTime=raio.apCasa||0;}
-  else if(jogo.gols_fora<jogo.gols_casa){timePrecisa=jogo.nome_fora;chutesPrecisa=jogo.alvo_fora;posseTime=posseForaPct;cruzTime=raio.cruzFora;escTime=raio.escFora;apTime=raio.apFora||0;}
-  else{const casaMelhor=jogo.alvo_casa>=jogo.alvo_fora; timePrecisa=casaMelhor?jogo.nome_casa:jogo.nome_fora; chutesPrecisa=Math.max(jogo.alvo_casa,jogo.alvo_fora); posseTime=casaMelhor?posseCasaPct:posseForaPct; cruzTime=casaMelhor?raio.cruzCasa:raio.cruzFora; escTime=casaMelhor?raio.escCasa:raio.escFora; apTime=casaMelhor?raio.apCasa||0:raio.apFora||0;}
+  let timePrecisa='',chutesPrecisa=0,posseTime=0,cruzTime=0,escTime=0,apTime=0, ladoPrecisa='';
+  if(jogo.gols_casa<jogo.gols_fora){timePrecisa=jogo.nome_casa; ladoPrecisa='home'; chutesPrecisa=jogo.alvo_casa;posseTime=posseCasaPct;cruzTime=raio.cruzCasa;escTime=raio.escCasa;apTime=raio.apCasa||0;}
+  else if(jogo.gols_fora<jogo.gols_casa){timePrecisa=jogo.nome_fora; ladoPrecisa='away'; chutesPrecisa=jogo.alvo_fora;posseTime=posseForaPct;cruzTime=raio.cruzFora;escTime=raio.escFora;apTime=raio.apFora||0;}
+  else{const casaMelhor=jogo.alvo_casa>=jogo.alvo_fora; timePrecisa=casaMelhor?jogo.nome_casa:jogo.nome_fora; ladoPrecisa=casaMelhor?'home':'away'; chutesPrecisa=Math.max(jogo.alvo_casa,jogo.alvo_fora); posseTime=casaMelhor?posseCasaPct:posseForaPct; cruzTime=casaMelhor?raio.cruzCasa:raio.cruzFora; escTime=casaMelhor?raio.escCasa:raio.escFora; apTime=casaMelhor?raio.apCasa||0:raio.apFora||0;}
   if(chutesPrecisa<FILTROS.min_chutes_gol_time_precisa) return {aprovado:false};
   const scorePressao=cruzTime+(escTime*2)+(apTime/10);
   if(scorePressao<FILTROS.min_pressao_score) return {aprovado:false};
@@ -84,20 +86,18 @@ function checaJogo(jogo,raio){
   if(cruzTime>=8||(cruzTime>=5&&escTime>=2)) zonaPressao=`Lateral (${cruzTime} cruz)`;
   else if(escTime>=3) zonaPressao=`Abafa Area (${escTime} esc)`;
   else if(apTime>=15) zonaPressao=`Meio-Perigoso (${apTime} AP)`;
-  return {aprovado:true,timePrecisa,chutesPrecisa,totalChutes:jogo.chutes_casa+jogo.chutes_fora,possePct:posseTime,scorePressao,zonaPressao};
+  return {aprovado:true,timePrecisa,ladoPrecisa,chutesPrecisa,totalChutes:jogo.chutes_casa+jogo.chutes_fora,possePct:posseTime,scorePressao,zonaPressao};
 }
 
 async function enviarTelegram(jogo,analise,raio){
   if(!TELEGRAM_TOKEN||!CHAT_ID) return false;
   const pCasa=(raio.posseCasa+raio.posseFora)>0?Math.round((raio.posseCasa/(raio.posseCasa+raio.posseFora))*100):50;
-  const linhaAP=raio.temAP?`Ataques Perigosos: ${raio.apCasa??0}x${raio.apFora??0}\n`:``;
-  const linhaCruz=raio.temCruz?`Cruzamentos: ${raio.cruzCasa}x${raio.cruzFora}\n`:``;
-  const msg=`🚨 RAIO-X GOL 2T — V34.6 60% POSSE\n\n🏆 ${jogo.liga.toUpperCase()}\n⚽ ${jogo.nome_casa} ${jogo.gols_casa}x${jogo.gols_fora} ${jogo.nome_fora}\n⏱️ ${jogo.minutoTexto}\n\n📊 ESTATISTICAS HT:\n🥅 Chutes: ${raio.chutesCasa}x${raio.chutesFora} (Total: ${analise.totalChutes})\n🎯 No Alvo: ${raio.alvoCasa}x${raio.alvoFora}\n${linhaAP}${linhaCruz}🚩 Escanteios: ${raio.escCasa}x${raio.escFora}\n📊 Posse: ${pCasa}% x ${100-pCasa}%\n🟨 Amarelos: ${raio.amarelosCasa}x${raio.amarelosFora}\n\n📍 PRESSAO: ${analise.zonaPressao}\n📈 Score: ${analise.scorePressao.toFixed(1)} | Posse time: ${analise.possePct}%\n\n🎯 Precisa: ${analise.timePrecisa} (${analise.chutesPrecisa} no alvo)`;
+  const msg=`🚨 RAIO-X GOL 2T — V34.7 60% POSSE\n\n🏆 ${jogo.liga.toUpperCase()}\n⚽ ${jogo.nome_casa} ${jogo.gols_casa}x${jogo.gols_fora} ${jogo.nome_fora}\n⏱️ ${jogo.minutoTexto}\n\n📊 HT: Chutes ${raio.chutesCasa}x${raio.chutesFora} | Alvo ${raio.alvoCasa}x${raio.alvoFora}\n📊 Posse: ${pCasa}% x ${100-pCasa}% | Esc: ${raio.escCasa}x${raio.escFora}\n\n📍 PRESSAO: ${analise.zonaPressao}\n📈 Score: ${analise.scorePressao.toFixed(1)} | Posse: ${analise.possePct}%\n\n🎯 Precisa: ${analise.timePrecisa} (${analise.chutesPrecisa} alvo)`;
   try{
     const r=await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({chat_id:CHAT_ID,text:msg})});
     const d=await r.json(); if(!d.ok) throw new Error(d.description);
     totalEnviados++;
-    relatorioDia.enviados.push(`${jogo.nome_casa} ${jogo.gols_casa}x${jogo.gols_fora} ${jogo.nome_fora}`);
+    relatorioDia.sinais.push({ id:jogo.id, liga:jogo.liga, jogo:`${jogo.nome_casa} ${jogo.gols_casa}x${jogo.gols_fora} ${jogo.nome_fora}`, placarHT:`${jogo.gols_casa}x${jogo.gols_fora}`, timePrecisa: analise.timePrecisa, ladoPrecisa: analise.ladoPrecisa, golsCasaHT:jogo.gols_casa, golsForaHT:jogo.gols_fora, status:'pendente', final:null });
     console.log(`Enviado: ${jogo.nome_casa} x ${jogo.nome_fora}`);
     return true;
   }catch(e){ totalErros++; console.log(`Erro Telegram: ${e.message}`); return false; }
@@ -118,7 +118,8 @@ async function buscarJogosESPN(){
           if(minuto<FILTROS.minuto_minimo||minuto>FILTROS.minuto_maximo) continue;
           const casa=comp.competitors?.find(c=>c.homeAway==='home'); const fora=comp.competitors?.find(c=>c.homeAway==='away'); if(!casa||!fora) continue;
           await sleep(400);
-          const raioTemp=await buscarRaioXCompleto(liga,ev.id);
+          const dados=await buscarRaioXCompleto(liga,ev.id);
+          const raioTemp=dados.raio;
           const jogo={id:String(ev.id),liga,nome_casa:casa?.team?.displayName||'Casa',nome_fora:fora?.team?.displayName||'Fora',gols_casa:numero(casa.score),gols_fora:numero(fora.score),chutes_casa:raioTemp.chutesCasa,chutes_fora:raioTemp.chutesFora,alvo_casa:raioTemp.alvoCasa,alvo_fora:raioTemp.alvoFora,minuto,minutoTexto:status==='STATUS_HALFTIME'?'INTERVALO':`${Math.floor(minuto)}'`};
           const analise=checaJogo(jogo,raioTemp); if(!analise.aprovado) continue;
           totalAprovados++; aprovados.push({jogo,analise,raio:raioTemp});
@@ -129,9 +130,31 @@ async function buscarJogosESPN(){
   return aprovados;
 }
 
+async function verificarResultados(){
+  console.log('🔍 Verificando resultados para GREEN/RED...');
+  for(let sinal of relatorioDia.sinais){
+    if(sinal.status!=='pendente') continue;
+    try{
+      const dados = await buscarRaioXCompleto(sinal.liga, sinal.id);
+      if(dados.finalCasa===null) continue;
+      const finalizou = dados.status && dados.status.includes('STATUS_FINAL');
+      let green=false;
+      if(sinal.ladoPrecisa==='home'){ green = dados.finalCasa > sinal.golsCasaHT; }
+      else { green = dados.finalFora > sinal.golsForaHT; }
+      // Se teve qualquer gol no 2T, consideramos movimento, mas o GREEN oficial é o time que precisava ter feito
+      if(finalizou){
+        sinal.status = green? 'green' : 'red';
+        sinal.final = `${dados.finalCasa}x${dados.finalFora}`;
+        console.log(`${sinal.jogo} => ${sinal.status.toUpperCase()} ${sinal.final}`);
+      }
+      await sleep(600);
+    }catch(e){}
+  }
+}
+
 async function executarRadar(){
   ultimoScan=new Date().toISOString();
-  console.log(`\n🔎 Radar V34.6 varrendo...`);
+  console.log(`\n🔎 Radar V34.7 varrendo...`);
   for(const [id,t] of enviados.entries()) if(Date.now()-t>3*60*60*1000) enviados.delete(id);
   try{
     const res=await buscarJogosESPN();
@@ -144,27 +167,13 @@ async function executarRadar(){
 }
 
 async function enviarRelatorioDiario(){
+  await verificarResultados();
   if(!TELEGRAM_TOKEN||!CHAT_ID) return;
-  const qtd=relatorioDia.enviados.length;
-  let lista=relatorioDia.enviados.map((j,i)=>`${i+1}. ${j}`).join('\n');
-  if(!lista) lista='Nenhum sinal hoje - filtro 60% rigoroso';
-  const msg=`📊 RELATORIO DO DIA - ${relatorioDia.data}\n\n🎯 Sinais enviados: ${qtd}\n\n${lista}\n\n🤖 Robo V34.6 60% POSSE\n🔎 Analisados: ${totalAprovados}\n\nAmanha tem mais 💰`;
-  try{
-    await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({chat_id:CHAT_ID,text:msg})});
-    console.log('📊 Relatorio enviado!');
-  }catch(e){ console.log('Erro relatorio',e.message); }
-  relatorioDia={data:new Date().toLocaleDateString('pt-BR'), enviados:[]};
-}
-
-const server=http.createServer((req,res)=>{
-  res.writeHead(200,{'Content-Type':'application/json'});
-  res.end(JSON.stringify({status:'online',robo:'V34.6 60% POSSE',ultimoScan,aprovados:totalAprovados,enviados:totalEnviados,hoje:relatorioDia,filtros:FILTROS},null,2));
-});
-
-server.listen(PORT,()=>{
-  console.log(`🚀 V34.6 ONLINE porta ${PORT}`);
-  executarRadar();
-  setInterval(executarRadar,60000);
-  cron.schedule('59 23 * * *', enviarRelatorioDiario, {timezone:"America/Sao_Paulo"});
-  console.log('⏰ Relatorio 23:59 agendado');
-});
+  const total = relatorioDia.sinais.length;
+  const greens = relatorioDia.sinais.filter(s=>s.status==='green').length;
+  const reds = relatorioDia.sinais.filter(s=>s.status==='red').length;
+  const pendentes = relatorioDia.sinais.filter(s=>s.status==='pendente').length;
+  let taxa = total>0? Math.round((greens/total)*100) : 0;
+  let lista = relatorioDia.sinais.map((s,i)=>{
+    let icon = s.status==='green'? '🟢' : s.status==='red'? '🔴' : '⏳';
+    return `${icon
