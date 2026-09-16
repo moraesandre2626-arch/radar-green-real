@@ -17,7 +17,7 @@ async function getJson(url){
   const t=setTimeout(()=>c.abort(),8000);
   try{
     const r=await fetch(url,{headers:{'User-Agent':'Mozilla/5.0'},signal:c.signal});
-    if(!r.ok) throw new Error(`HTTP ${r.status}`);
+    if(!r.ok) throw new Error('HTTP '+r.status);
     return await r.json();
   } finally{ clearTimeout(t); }
 }
@@ -35,8 +35,9 @@ function pegaStat(S,nomes){
 }
 async function buscarRaioXCompleto(liga,eventId){
   const raio={chutesCasa:0,chutesFora:0,alvoCasa:0,alvoFora:0,posseCasa:0,posseFora:0,escCasa:0,escFora:0,amarelosCasa:0,amarelosFora:0,cruzCasa:0,cruzFora:0,apCasa:null,apFora:null,temAP:false,temCruz:false};
+  let finalCasa=null, finalFora=null, status=null;
   try{
-    const summary=await getJson(`https://site.api.espn.com/apis/site/v2/sports/soccer/${liga}/summary?event=${eventId}`);
+    const summary=await getJson('https://site.api.espn.com/apis/site/v2/sports/soccer/'+liga+'/summary?event='+eventId);
     const teams=summary?.boxscore?.teams||[];
     for(let i=0;i<teams.length;i++){
       const bloco=teams[i];
@@ -62,11 +63,17 @@ async function buscarRaioXCompleto(liga,eventId){
         if(ap!==null){raio.apFora=ap; raio.temAP=true;}
       }
     }
-    const comp = summary?.header?.competitions?.[0];
-    return { raio, finalCasa: numero(comp?.competitors?.find(c=>c.homeAway==='home')?.score), finalFora: numero(comp?.competitors?.find(c=>c.homeAway==='away')?.score), status: comp?.status?.type?.name };
-  }catch(e){ return { raio, finalCasa:null, finalFora:null, status:null } }
+    const compH = summary?.header?.competitions?.[0];
+    if(compH){
+      const casaC = compH.competitors?.find(c=>c.homeAway==='home');
+      const foraC = compH.competitors?.find(c=>c.homeAway==='away');
+      finalCasa = numero(casaC?.score);
+      finalFora = numero(foraC?.score);
+      status = compH?.status?.type?.name;
+    }
+  }catch(e){}
+  return { raio, finalCasa, finalFora, status };
 }
-
 function checaJogo(jogo,raio){
   if(!LIGAS_PERMITIDAS.includes(jogo.liga)) return {aprovado:false};
   if(Math.abs(jogo.gols_casa-jogo.gols_fora)>FILTROS.max_diferenca_gols) return {aprovado:false};
@@ -83,97 +90,4 @@ function checaJogo(jogo,raio){
   if(scorePressao<FILTROS.min_pressao_score) return {aprovado:false};
   if(posseTime<FILTROS.posse_minima_pressao) return {aprovado:false};
   let zonaPressao='Meio';
-  if(cruzTime>=8||(cruzTime>=5&&escTime>=2)) zonaPressao=`Lateral (${cruzTime} cruz)`;
-  else if(escTime>=3) zonaPressao=`Abafa Area (${escTime} esc)`;
-  else if(apTime>=15) zonaPressao=`Meio-Perigoso (${apTime} AP)`;
-  return {aprovado:true,timePrecisa,ladoPrecisa,chutesPrecisa,totalChutes:jogo.chutes_casa+jogo.chutes_fora,possePct:posseTime,scorePressao,zonaPressao};
-}
-
-async function enviarTelegram(jogo,analise,raio){
-  if(!TELEGRAM_TOKEN||!CHAT_ID) return false;
-  const pCasa=(raio.posseCasa+raio.posseFora)>0?Math.round((raio.posseCasa/(raio.posseCasa+raio.posseFora))*100):50;
-  const msg=`🚨 RAIO-X GOL 2T — V34.7 60% POSSE\n\n🏆 ${jogo.liga.toUpperCase()}\n⚽ ${jogo.nome_casa} ${jogo.gols_casa}x${jogo.gols_fora} ${jogo.nome_fora}\n⏱️ ${jogo.minutoTexto}\n\n📊 HT: Chutes ${raio.chutesCasa}x${raio.chutesFora} | Alvo ${raio.alvoCasa}x${raio.alvoFora}\n📊 Posse: ${pCasa}% x ${100-pCasa}% | Esc: ${raio.escCasa}x${raio.escFora}\n\n📍 PRESSAO: ${analise.zonaPressao}\n📈 Score: ${analise.scorePressao.toFixed(1)} | Posse: ${analise.possePct}%\n\n🎯 Precisa: ${analise.timePrecisa} (${analise.chutesPrecisa} alvo)`;
-  try{
-    const r=await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({chat_id:CHAT_ID,text:msg})});
-    const d=await r.json(); if(!d.ok) throw new Error(d.description);
-    totalEnviados++;
-    relatorioDia.sinais.push({ id:jogo.id, liga:jogo.liga, jogo:`${jogo.nome_casa} ${jogo.gols_casa}x${jogo.gols_fora} ${jogo.nome_fora}`, placarHT:`${jogo.gols_casa}x${jogo.gols_fora}`, timePrecisa: analise.timePrecisa, ladoPrecisa: analise.ladoPrecisa, golsCasaHT:jogo.gols_casa, golsForaHT:jogo.gols_fora, status:'pendente', final:null });
-    console.log(`Enviado: ${jogo.nome_casa} x ${jogo.nome_fora}`);
-    return true;
-  }catch(e){ totalErros++; console.log(`Erro Telegram: ${e.message}`); return false; }
-}
-
-async function buscarJogosESPN(){
-  const aprovados=[];
-  for(const liga of LIGAS_PERMITIDAS){
-    try{
-      const data=await getJson(`https://site.api.espn.com/apis/site/v2/sports/soccer/${liga}/scoreboard`);
-      if(!Array.isArray(data.events)) continue;
-      for(const ev of data.events){
-        try{
-          const comp=ev?.competitions?.[0]; if(!comp) continue;
-          const status=comp?.status?.type?.name||'';
-          if(!['STATUS_HALFTIME','STATUS_SECOND_HALF'].includes(status)) continue;
-          let minuto=numero(comp?.status?.clock); if(status==='STATUS_HALFTIME') minuto=45;
-          if(minuto<FILTROS.minuto_minimo||minuto>FILTROS.minuto_maximo) continue;
-          const casa=comp.competitors?.find(c=>c.homeAway==='home'); const fora=comp.competitors?.find(c=>c.homeAway==='away'); if(!casa||!fora) continue;
-          await sleep(400);
-          const dados=await buscarRaioXCompleto(liga,ev.id);
-          const raioTemp=dados.raio;
-          const jogo={id:String(ev.id),liga,nome_casa:casa?.team?.displayName||'Casa',nome_fora:fora?.team?.displayName||'Fora',gols_casa:numero(casa.score),gols_fora:numero(fora.score),chutes_casa:raioTemp.chutesCasa,chutes_fora:raioTemp.chutesFora,alvo_casa:raioTemp.alvoCasa,alvo_fora:raioTemp.alvoFora,minuto,minutoTexto:status==='STATUS_HALFTIME'?'INTERVALO':`${Math.floor(minuto)}'`};
-          const analise=checaJogo(jogo,raioTemp); if(!analise.aprovado) continue;
-          totalAprovados++; aprovados.push({jogo,analise,raio:raioTemp});
-        }catch(e){}
-      }
-    }catch(e){ totalErros++; }
-  }
-  return aprovados;
-}
-
-async function verificarResultados(){
-  console.log('🔍 Verificando resultados para GREEN/RED...');
-  for(let sinal of relatorioDia.sinais){
-    if(sinal.status!=='pendente') continue;
-    try{
-      const dados = await buscarRaioXCompleto(sinal.liga, sinal.id);
-      if(dados.finalCasa===null) continue;
-      const finalizou = dados.status && dados.status.includes('STATUS_FINAL');
-      let green=false;
-      if(sinal.ladoPrecisa==='home'){ green = dados.finalCasa > sinal.golsCasaHT; }
-      else { green = dados.finalFora > sinal.golsForaHT; }
-      // Se teve qualquer gol no 2T, consideramos movimento, mas o GREEN oficial é o time que precisava ter feito
-      if(finalizou){
-        sinal.status = green? 'green' : 'red';
-        sinal.final = `${dados.finalCasa}x${dados.finalFora}`;
-        console.log(`${sinal.jogo} => ${sinal.status.toUpperCase()} ${sinal.final}`);
-      }
-      await sleep(600);
-    }catch(e){}
-  }
-}
-
-async function executarRadar(){
-  ultimoScan=new Date().toISOString();
-  console.log(`\n🔎 Radar V34.7 varrendo...`);
-  for(const [id,t] of enviados.entries()) if(Date.now()-t>3*60*60*1000) enviados.delete(id);
-  try{
-    const res=await buscarJogosESPN();
-    if(!res.length){ console.log('Nenhum aprovado.'); return; }
-    for(const {jogo,analise,raio} of res){
-      const chave=`${jogo.liga}_${jogo.id}_HT`; if(enviados.has(chave)) continue;
-      if(await enviarTelegram(jogo,analise,raio)) enviados.set(chave, Date.now());
-    }
-  }catch(e){ console.log(`Erro Radar: ${e.message}`); }
-}
-
-async function enviarRelatorioDiario(){
-  await verificarResultados();
-  if(!TELEGRAM_TOKEN||!CHAT_ID) return;
-  const total = relatorioDia.sinais.length;
-  const greens = relatorioDia.sinais.filter(s=>s.status==='green').length;
-  const reds = relatorioDia.sinais.filter(s=>s.status==='red').length;
-  const pendentes = relatorioDia.sinais.filter(s=>s.status==='pendente').length;
-  let taxa = total>0? Math.round((greens/total)*100) : 0;
-  let lista = relatorioDia.sinais.map((s,i)=>{
-    let icon = s.status==='green'? '🟢' : s.status==='red'? '🔴' : '⏳';
-    return `${icon
+  if(cruzTime>=8||(cruzTime
