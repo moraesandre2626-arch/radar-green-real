@@ -30,30 +30,28 @@ function checa(j,R){
  else{let cm=j.alC>=j.alF;need=cm?j.nc:j.nf;lado=cm?'home':'away';alvo=Math.max(j.alC,j.alF);po=cm?pc:pf;cr=cm?R.crC:R.crF;es=cm?R.esC:R.esF;ap=cm?R.apC:R.apF;}
  if(alvo<2)return null;
  let score=cr+(es*2)+(ap/10);if(score<6)return null;if(po<60)return null;
- return {need,lado,alvo,tot:j.gc+j.gf,po,score,zona:cr>=8?'Lateral '+cr+'c':es>=3?'Abafa '+es+'esc':'Meio'};
+ return {need,lado,alvo,po,score,zona:cr>=8?'Lateral ('+cr+' cruz)':es>=3?'Abafa Area ('+es+' esc)':'Meio-Perigoso ('+ap+' AP)'};
 }
 async function send(j,a,R){
  if(!TOKEN||!CHAT)return false;
  let pC=R.poC+R.poF>0?Math.round(R.poC/(R.poC+R.poF)*100):50;
- let txt='RAIO-X GOL 2T V34.7\n\n'+j.liga.toUpperCase()+'\n'+j.nc+' '+j.gc+'x'+j.gf+' '+j.nf+'\n'+j.mt+'\n\nHT: '+R.chC+'x'+R.chF+' chutes | '+R.alC+'x'+R.alF+' alvo\nPosse '+pC+'% x '+(100-pC)+'%\nEsc '+R.esC+'x'+R.esF+'\nPressao: '+a.zona+' Score '+a.score.toFixed(1)+'\nPosse time '+a.po+'%\n\nPrecisa: '+a.need;
+ let link='https://www.espn.com/soccer/match/_/gameId/'+j.id;
+ let txt='';
+ txt+='\uD83D\uDEA8 RAIO-X GOL 2T - 60% POSSE\n\n';
+ txt+='\uD83C\uDFC6 '+j.liga.toUpperCase()+'\n';
+ txt+='\u26BD '+j.nc+' '+j.gc+'x'+j.gf+' '+j.nf+'\n';
+ txt+='\u23F1\uFE0F '+j.mt+'\n\n';
+ txt+='\uD83D\uDCCA HT: '+R.chC+'x'+R.chF+' chutes | '+R.alC+'x'+R.alF+' alvo\n';
+ txt+='Posse: '+pC+'% x '+(100-pC)+'% | Esc: '+R.esC+'x'+R.esF+'\n\n';
+ txt+='\uD83D\uDCCD PRESSAO: '+a.zona+'\n';
+ txt+='\uD83D\uDCC8 Score: '+a.score.toFixed(1)+' | Posse time: '+a.po+'%\n\n';
+ txt+='\uD83C\uDFAF PRECISA: '+a.need+' ('+a.alvo+' no alvo)\n';
+ txt+='\uD83D\uDD17 Ver lance: '+link+'\n\n';
+ txt+='\uD83D\uDCB0 ENTRADA: Over 0.5 GOL 2T / '+a.need+' marca';
  try{let r=await fetch('https://api.telegram.org/bot'+TOKEN+'/sendMessage',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({chat_id:CHAT,text:txt})});let d=await r.json();if(!d.ok)throw Error(d.description);
- envi++;rel.sinais.push({id:j.id,liga:j.liga,jogo:j.nc+' '+j.gc+'x'+j.gf+' '+j.nf,ht:j.gc+'x'+j.gf,need:a.need,lado:a.lado,gC:j.gc,gF:j.gf,status:'pendente',final:null});return true;}catch(e){return false;}
+ envi++;rel.sinais.push({id:j.id,liga:j.liga,jogo:j.nc+' '+j.gc+'x'+j.gf+' '+j.nf,ht:j.gc+'x'+j.gf,need:a.need,lado:a.lado,gC:j.gc,gF:j.gf,status:'pendente',final:null,link:link});return true;}catch(e){return false;}
 }
 async function scan(){
  let lista=[];
  for(let liga of LIGAS){try{let sb=await getJ('https://site.api.espn.com/apis/site/v2/sports/soccer/'+liga+'/scoreboard');if(!Array.isArray(sb.events))continue;
- for(let ev of sb.events){try{let comp=ev.competitions?.[0];if(!comp)continue;let st=comp.status?.type?.name;if(!['STATUS_HALFTIME','STATUS_SECOND_HALF'].includes(st))continue;let min=num(comp.status?.clock);if(st==='STATUS_HALFTIME')min=45;if(min<40||min>55)continue;
- let ca=comp.competitors?.find(c=>c.homeAway==='home'),fo=comp.competitors?.find(c=>c.homeAway==='away');if(!ca||!fo)continue;await sleep(400);let {R}=await raioX(liga,ev.id);
- let jogo={id:String(ev.id),liga,nc:ca.team?.displayName||'Casa',nf:fo.team?.displayName||'Fora',gc:num(ca.score),gf:num(fo.score),alC:R.alC,alF:R.alF,mt:st==='STATUS_HALFTIME'?'INTERVALO':Math.floor(min)+"'",R};
- let an=checa(jogo,R);if(!an)continue;aprov++;lista.push({jogo,an,R});}catch(e){}}}catch(e){}}
- return lista;
-}
-async function verifica(){
- for(let s of rel.sinais){if(s.status!=='pendente')continue;try{let {fC,fF,st}=await raioX(s.liga,s.id);if(fC===null)continue;if(st&&st.includes('STATUS_FINAL')){let g=s.lado==='home'?fC>s.gC:fF>s.gF;s.status=g?'green':'red';s.final=fC+'x'+fF;}await sleep(500);}catch(e){}}
-}
-async function radar(){ultimo=new Date().toISOString();console.log('varrendo...');let r=await scan();for(let {jogo,an,R} of r){let k=jogo.liga+'_'+jogo.id;if(ja.has(k))continue;if(await send(jogo,an,R))ja.set(k,Date.now());}}
-async function relatorio(){await verifica();if(!TOKEN||!CHAT)return;let tot=rel.sinais.length,gre=rel.sinais.filter(s=>s.status==='green').length,red=rel.sinais.filter(s=>s.status==='red').length;let taxa=tot?Math.round(gre/tot*100):0;
- let lis=rel.sinais.length?rel.sinais.map((s,i)=>{let ic=s.status==='green'?'[G]':s.status==='red'?'[R]':'[P]';return ic+' '+(i+1)+'. '+s.jogo+' HT '+s.ht+' -> '+(s.final||'?')+' '+s.need;}).join('\n'):'Nenhum sinal hoje - filtro 60% rigoroso';
- let msg='RELATORIO '+rel.data+'\nTotal:'+tot+' GREEN:'+gre+' RED:'+red+' Taxa:'+taxa+'%\n\n'+lis;await fetch('https://api.telegram.org/bot'+TOKEN+'/sendMessage',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({chat_id:CHAT,text:msg})});rel={data:new Date().toLocaleDateString('pt-BR'),sinais:[]};}
-const srv=http.createServer((_,res)=>{res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify({status:'online',robo:'V34.7 FIX CURTO',ultimo,aprov,envi,hoje:rel}));});
-srv.listen(PORT,()=>{console.log('ONLINE '+PORT);radar();setInterval(radar,60000);setInterval(verifica,900000);cron.schedule('59 23 * * *',relatorio,{timezone:'America/Sao_Paulo'});});
+ for(let ev of sb.events){try{let comp=ev.competitions?.[0];if(!comp)continue;let st=comp.status?.type?.name;if(!['STATUS_HALFTIME','STATUS_SECOND_HALF'].includes(st))continue;let min=num(comp.status?.clock
