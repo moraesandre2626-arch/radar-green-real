@@ -1,6 +1,11 @@
 {
-  "name": "radar-green-real",
+  "name": "radar-v34-6",
   "version": "1.0.0",
-  "type": "commonjs",
-  "main": "index.js"
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "node-cron": "^3.0.3"
+  }
 }
