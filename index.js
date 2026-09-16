@@ -48,8 +48,7 @@ async function buscaRaio(liga,eventId){
    if(f) lado=f.homeAway;
    const S=bloco.statistics||[];
    const ch=stat(S,["totalShots","shots"]);
-   const al=stat(S,["shotsOnTarget","shotsOnGoal"]);
-   const posse=stat(S,["possessionPct","possession"]);
+   const al=stat(S,["shotsOnTarget","shotsOnGoal"]);   const posse=stat(S,["possessionPct","possession"]);
    const esc=stat(S,["wonCorners","cornerKicks"]);
    const cruz=stat(S,["crosses","totalCrosses"]);
    const ap=stat(S,["dangerousAttacks","dangerousAttack","attack"]);
@@ -64,31 +63,7 @@ function checa(jogo,raio){
  if(Math.abs(jogo.gc-jogo.gf)>F.maxGol) return {ok:false};
  if((jogo.chCasa+jogo.chFora)<F.minChutes) return {ok:false};
  const totPos=raio.posseCasa+raio.posseFora;
- const pCasa=totPos>0?Math.round((raio.posseCasa/totPos)*100):50;
- const pFora=100-pCasa;
- let precisa="",chPrecisa=0,posseTime=0,cruzTime=0,escTime=0,apTime=0;
- if(jogo.gc<jogo.gf){precisa=jogo.casa;chPrecisa=jogo.alCasa;posseTime=pCasa;cruzTime=raio.cruzCasa;escTime=raio.escCasa;apTime=raio.apCasa;}
- else if(jogo.gf<jogo.gc){precisa=jogo.fora;chPrecisa=jogo.alFora;posseTime=pFora;cruzTime=raio.cruzFora;escTime=raio.escFora;apTime=raio.apFora;}
- else{const m=jogo.alCasa>=jogo.alFora;precisa=m?jogo.casa:jogo.fora;chPrecisa=Math.max(jogo.alCasa,jogo.alFora);posseTime=m?pCasa:pFora;cruzTime=m?raio.cruzCasa:raio.cruzFora;escTime=m?raio.escCasa:raio.escFora;apTime=m?raio.apCasa:raio.apFora;}
- if(chPrecisa<F.minAlvo) return {ok:false};
- const score=cruzTime+(escTime*2)+(apTime/10);
- if(score<F.minScore) return {ok:false};
- if(posseTime<F.minPosse) return {ok:false};
- let zona="Meio";
- if(cruzTime>=8) zona="Lateral ("+cruzTime+" cruz)";
- else if(cruzTime>=5&&escTime>=2) zona="Lateral ("+cruzTime+" cruz)";
- else if(escTime>=3) zona="Abafa Area ("+escTime+" esc)";
- else if(apTime>=15) zona="Meio-Perigoso ("+apTime+" AP)";
- return {ok:true,precisa,chPrecisa,posseTime,score,zona,cruzTime,escTime,pCasa};
-}async function envia(texto){
- if(!TOKEN||!CHAT) return false;
- try{
-  const r=await fetch("https://api.telegram.org/bot"+TOKEN+"/sendMessage",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chat_id:CHAT,text:texto})});
-  const d=await r.json(); if(!d.ok) throw new Error(d.description);
-  totalEnviados++; return true;
- }catch(e){console.log("Erro:",e.message); return false;}
-}
-async function enviaSinal(jogo,analise,raio){
+ const pCasa=totPos>0?Math.round((raio.posseCasa/totPos)*100):50;async function enviaSinal(jogo,analise,raio){
  const pCasa=analise.pCasa; const pFora=100-pCasa;
  let msg="";
  msg+="🚨 RAIO-X GOL 2T V35.1 PREMIUM\n\n";
@@ -126,8 +101,58 @@ async function buscaJogos(){
     if(minuto<F.minMin||minuto>F.maxMin) continue;
     const casaObj=comp.competitors?.find(c=>c.homeAway==="home");
     const foraObj=comp.competitors?.find(c=>c.homeAway==="away");
-    if(!casaObj||!foraObj) continue;
-    await sleep(400);
-    const raio=await buscaRaio(liga,String(ev.id));
-    const jogo={id:String(ev.id),liga,casa:casaObj.team?.displayName||"Casa",fora:foraObj.team?.displayName||"Fora",gc:num(casaObj.score),gf:num(foraObj.score),chCasa:raio.chCasa,chFora:raio.chFora,alCasa:raio.alCasa,alFora:raio.alFora,minuto,minTxt:st==="STATUS_HALFTIME"?"INTERVALO":Math.floor(minuto)+"' "};
-    const analise=checa
+    if(!   const comp=ev.competitions?.[0]; if(!comp) continue;
+   const casaObj=comp.competitors?.find(c=>c.homeAway==="home");
+   const foraObj=comp.competitors?.find(c=>c.homeAway==="away");
+   const gcFinal=num(casaObj?.score); const gfFinal=num(foraObj?.score);
+   const gol2T=(gcFinal+gfFinal)>(r.gc+r.gf);
+   r.status=gol2T?"green":"red";
+   r.placarFinal=gcFinal+"x"+gfFinal;
+  }catch(e){}
+ }
+}
+async function enviaRelatorio(){
+ await verificaResultados();
+ const data=new Date().toLocaleDateString("pt-BR");
+ const greens=resultadosDia.filter(r=>r.status==="green").length;
+ const reds=resultadosDia.filter(r=>r.status==="red").length;
+ const pend=resultadosDia.filter(r=>r.status==="pendente").length;
+ const total=greens+reds;
+ const perc=total>0?Math.round((greens/total)*100):0;
+ let txt="📋 RELATORIO DIARIO V35.1 - "+data+"\n\n";
+ txt+="🎯 Entradas: "+resultadosDia.length+"\n";
+ txt+="✅ Greens: "+greens+"\n";
+ txt+="❌ Reds: "+reds+"\n";
+ if(pend>0) txt+="⏳ Pendentes: "+pend+"\n";
+ if(total>0) txt+="📈 Assertividade: "+perc+"%\n";
+ txt+="\n";
+ if(resultadosDia.length===0){ txt+="Nenhum sinal hoje.\n"; } else {
+  txt+="📋 DETALHES:\n";
+  for(let i=0;i<resultadosDia.length;i++){
+   const r=resultadosDia[i];
+   let ic="⏳"; if(r.status==="green") ic="✅"; if(r.status==="red") ic="❌";
+   txt+=ic+" "+r.jogo+" "+(r.placarFinal?r.placarFinal:"")+"\n";
+  }
+ }
+ txt+="\n🤖 Robo V35.1 PREMIUM";
+ await envia(txt);
+ sinaisDia=[]; resultadosDia=[]; totalAprovados=0;
+}
+function verificaHora(){
+ const agora=new Date().toLocaleString("pt-BR",{timeZone:"America/Sao_Paulo"});
+ const hora=(agora.split(", ")[1]||"").split(":");
+ const h=parseInt(hora[0]||"0"); const m=parseInt(hora[1]||"0");
+ if(h===23&&m===59&&!relatorioOk){relatorioOk=true; enviaRelatorio();}
+ if(h===0&&m===0) relatorioOk=false;
+}
+async function radar(){
+ ultimoScan=new Date().toISOString();
+ for(const [k,v] of enviados.entries()) if(Date.now()-v>3*60*60*1000) enviados.delete(k);
+ try{const res=await buscaJogos(); for(const it of res){const chave=it.jogo.liga+"_"+it.jogo.id+"_HT"; if(enviados.has(chave)) continue; if(await enviaSinal(it.jogo,it.analise,it.raio)) enviados.set(chave,Date.now());}}catch(e){console.log(e.message);}
+}
+const server=http.createServer((req,res)=>{
+ res
+ const pFora=100-pCasa;
+ let precisa="",chPrecisa=0,posseTime=0,cruzTime=0,escTime=0,apTime=0;
+ if(jogo.gc<jogo.gf){precisa=jogo.casa;chPrecisa=jogo.alCasa;posseTime=pCasa;cruzTime=raio.cruzCasa;escTime=raio.escCasa;apTime=raio.apCasa;}
+ else if(jogo.gf<jogo.gc){precisa=jogo.fora;chPrecisa=jogo.alFora;pos
