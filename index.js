@@ -1,86 +1,108 @@
-from flask import Flask
-import requests, os, time
-from threading import Thread
-from datetime import datetime
-import pytz
+const express = require('express');
+const axios = require('axios');
+const cron = require('node-cron');
 
-app = Flask(__name__)
+const app = express();
+const PORT = process.env.PORT || 10000;
 
-TOKEN = os.getenv("TELEGRAM_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
-BR_TZ = pytz.timezone("America/Sao_Paulo")
+const TOKEN = process.env.TELEGRAM_TOKEN;
+const CHAT_ID = process.env.CHAT_ID;
 
-sinais_dia = []
+let sinaisDia = [];
 
-def enviar(msg):
-    try:
-        url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-        requests.post(url, data={"chat_id": CHAT_ID, "text": msg}, timeout=10)
-    except: pass
+async function enviar(msg) {
+    try {
+        if (!TOKEN || !CHAT_ID) {
+            console.log("Sem TOKEN/CHAT_ID");
+            return;
+        }
+        const url = `https://api.telegram.org/bot${TOKEN}/sendMessage`;
+        await axios.post(url, {
+            chat_id: CHAT_ID,
+            text: msg
+        });
+        console.log("Enviado:", msg.substring(0,30));
+    } catch (e) {
+        console.log("Erro enviar:", e.message);
+    }
+}
 
-def buscar_jogos():
-    # SEU CODIGO DE BUSCA AQUI
-    # Exemplo retorno:
+// MOCK PRA TESTE - depois voce troca pela busca real
+function buscarJogos() {
     return [{
-        "liga": "BRA.1",
-        "jogo": "Bragantino 0x1 Flamengo",
-        "tempo": "47'",
-        "chutes": "12x8",
-        "alvo": "4x2",
-        "posse": 68,
-        "posse2": 32,
-        "esc": "5x1",
-        "c": 9,
-        "score": 11.5,
-        "time_precisa": "Bragantino",
-        "ht": "0x1",
-        "ft": "1x1"
-    }]def loop():
-    while True:
-        try:
-            agora = datetime.now(BR_TZ)
-            jogos = buscar_jogos()
-            
-            for j in jogos:
-                if j["posse"] >= 60 and 45 <= int(j["tempo"].replace("'","")) <= 75:
-                    msg = f"""RAIO-X GOL 2T V34.8 PREMIUM
+        liga: "BRA.1",
+        jogo: "Bragantino 0x1 Flamengo",
+        tempo: "47'",
+        chutes: "12x8",
+        alvo: "4x2",
+        posse: 68,
+        posse2: 32,
+        esc: "5x1",
+        c: 9,
+        score: 11.5,
+        time_precisa: "Bragantino",
+        ht: "0x1",
+        ft: "1x1"
+    }];
+}
 
-{j['liga']}
-{j['jogo']}
-{j['tempo']}
+async function loopPrincipal() {
+    try {
+        const jogos = buscarJogos();
+        for (const j of jogos) {
+            const minuto = parseInt(j.tempo.replace("'", ""));
+            if (j.posse >= 60 && minuto >= 45 && minuto <= 75) {
+                const msg = `RAIO-X GOL 2T V34.8 PREMIUM
 
-Chutes {j['chutes']} Alvo {j['alvo']}
-Posse {j['posse']}% x {j['posse2']}% Esc {j['esc']}
-Pressao: Lateral {j['c']}c Score {j['score']}
-Precisa: {j['time_precisa']}
-ENTRADA Over 0.5 GOL"""
-                    enviar(msg)
-                    sinais_dia.append(j)
+${j.liga}
+${j.jogo}
+${j.tempo}
 
-            if agora.hour == 23 and agora.minute == 59:
-                total = len(sinais_dia)
-                greens = sum(1 for s in sinais_dia if s["ft"] != s["ht"])
-                taxa = int(greens/total*100) if total else 0
-                lucro = greens - (total-greens)
-                txt = f"RELATORIO {agora.strftime('%d/%m/%Y')}\nTotal:{total} GREEN:{greens} RED:{total-greens} Taxa:{taxa}% Lucro:{lucro} un\n\n"
-                if total == 0:
-                    txt += "Nenhum sinal hoje"
-                else:
-                    for i,s in enumerate(sinais_dia,1):
-                        res = "GREEN" if s["ft"] != s["ht"] else "RED"
-                        txt += f"[{res}] {i}. {s['jogo']} HT {s['ht']} -> {s['ft']} {s['time_precisa']}\n"
-                enviar(txt)
-                sinais_dia.clear()
-                time.sleep(70)
-                
-        except: pass
-        time.sleep(900)
+Chutes ${j.chutes} Alvo ${j.alvo}
+Posse ${j.posse}% x ${j.posse2}% Esc ${j.esc}
+Pressao: Lateral ${j.c}c Score ${j.score}
+Precisa: ${j.time_precisa}
+ENTRADA Over 0.5 GOL`;
 
-@app.route("/")
-def home():
-    return "V34.8 PREMIUM CURTO SEM LINK - LIVE"
+                await enviar(msg);
+                sinaisDia.push(j);
+            }
+        }
+    } catch (e) {
+        console.log("Erro loop:", e.message);
+    }
+}
 
-Thread(target=loop, daemon=True).start()
+// Roda a cada 1 minuto
+setInterval(loopPrincipal, 60 * 1000);
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT",10000)))
+// Relatorio 23:59 Brasil
+cron.schedule('59 23 * * *', async () => {
+    const total = sinaisDia.length;
+    const greens = sinaisDia.filter(s => s.ft !== s.ht).length;
+    const taxa = total ? Math.round(greens/total*100) : 0;
+    const lucro = greens - (total - greens);
+    const data = new Date().toLocaleDateString('pt-BR');
+    
+    let txt = `RELATORIO ${data}\nTotal:${total} GREEN:${greens} RED:${total-greens} Taxa:${taxa}% Lucro:${lucro} un\n\n`;
+    if (total === 0) {
+        txt += "Nenhum sinal hoje";
+    } else {
+        sinaisDia.forEach((s, i) => {
+            const res = s.ft !== s.ht ? "GREEN" : "RED";
+            txt += `[${res}] ${i+1}. ${s.jogo} HT ${s.ht} -> ${s.ft} ${s.time_precisa}\n`;
+        });
+    }
+    await enviar(txt);
+    sinaisDia = [];
+}, { timezone: "America/Sao_Paulo" });
+
+app.get("/", (req, res) => {
+    res.send("V34.8 PREMIUM CURTO SEM LINK - LIVE NODE");
+});
+
+app.listen(PORT, () => {
+    console.log(`Rodando na porta ${PORT}`);
+    enviar("✅ V34.8 PREMIUM NODE SEM LINK INICIADO - Teste");
+    loopPrincipal();
+});
