@@ -119,4 +119,75 @@ async function buscaJogos(){
         const foraObj = comp.competitors?.find(c=>c.homeAway==="away");
         if(!casaObj||!foraObj) continue;
         await sleep(400);
-        const raio = await buscaRaio(liga, ev
+        const raio = await buscaRaio(liga, ev.id);
+        const jogo = {
+          id:String(ev.id),
+          liga:liga,
+          casa:casaObj.team?.displayName||"Casa",
+          fora:foraObj.team?.displayName||"Fora",
+          gc:num(casaObj.score),
+          gf:num(foraObj.score),
+          chCasa:raio.chCasa,
+          chFora:raio.chFora,
+          alCasa:raio.alCasa,
+          alFora:raio.alFora,
+          minuto:minuto,
+          minutoTxt: st==="STATUS_HALFTIME"? "INTERVALO" : Math.floor(minuto)+"'"
+        };
+        const analise = checa(jogo,raio);
+        if(!analise.ok) continue;
+        totalAprovados++;
+        lista.push({jogo,analise,raio});
+      }
+    }catch(e){}
+  }
+  return lista;
+}
+async function relatorio(){
+  const data = new Date().toLocaleDateString("pt-BR");
+  let txt = "RELATORIO DIARIO V34.8 PREMIUM - "+data+"\n\n";
+  txt += "Scans: "+totalAprovados+"\n";
+  txt += "Sinais hoje: "+sinaisDia.length+"\n\n";
+  if(sinaisDia.length===0) txt+="Nenhum sinal aprovado hoje.\n";
+  else{
+    txt+="SINAIS:\n";
+    sinaisDia.forEach((s,i)=>{ txt+=(i+1)+". "+s+"\n"; });
+  }
+  txt+="\nRobo online";
+  await enviaTelegram(txt);
+  sinaisDia=[];
+  totalAprovados=0;
+}
+function verificaHora(){
+  const agora = new Date().toLocaleString("pt-BR",{timeZone:"America/Sao_Paulo"});
+  const hora = agora.split(", ")[1]||"";
+  const partes = hora.split(":");
+  const h = parseInt(partes[0]||"0");
+  const m = parseInt(partes[1]||"0");
+  if(h===23 && m===59 &&!relatorioJaEnviado){
+    relatorio();
+    relatorioJaEnviado=true;
+  }
+  if(h===0 && m===0) relatorioJaEnviado=false;
+}
+async function radar(){
+  ultimoScan=new Date().toISOString();
+  for(const [id,t] of enviados.entries()){ if(Date.now()-t>3*60*60*1000) enviados.delete(id); }
+  const res = await buscaJogos();
+  for(const item of res){
+    const chave=item.jogo.liga+"_"+item.jogo.id+"_HT";
+    if(enviados.has(chave)) continue;
+    if(await enviaSinal(item.jogo,item.analise,item.raio)) enviados.set(chave,Date.now());
+  }
+}
+const server = http.createServer((req,res)=>{
+  res.writeHead(200,{'Content-Type':'application/json'});
+  res.end(JSON.stringify({status:"online",robo:"V34.8 PREMIUM SEM LINK",ultimoScan,totalAprovados,totalEnviados,sinaisHoje:sinaisDia.length}));
+});
+server.listen(PORT,()=>{
+  console.log("ROBO V34.8 ONLINE porta "+PORT);
+  radar();
+  setInterval(radar,60000);
+  setInterval(verificaHora,60000);
+  enviaTelegram("V34.8 PREMIUM SEM LINK INICIADO - LIVE");
+});
