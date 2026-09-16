@@ -7,7 +7,7 @@ const LIGAS = ["bra.1","bra.2","por.1","eng.1","esp.1","ger.1","ita.1","fra.1","
 
 const F = { maxGol:2, minAlvo:2, minChutes:8, minMin:40, maxMin:55, minPosse:60, minScore:6 };
 
-let ultimoScan=null, totalAprovados=0, totalEnviados=0, sinaisDia=[], relatorioOk=false;
+let ultimoScan=null, totalAprovados=0, totalEnviados=0, sinaisDia=[], resultadosDia=[], relatorioOk=false;
 const enviados=new Map();
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 
@@ -96,7 +96,7 @@ async function envia(texto){
 async function enviaSinal(jogo,analise,raio){
  const pCasa=analise.pCasa; const pFora=100-pCasa;
  let msg="";
- msg+="🚨 RAIO-X GOL 2T V34.9 PREMIUM\n\n";
+ msg+="🚨 RAIO-X GOL 2T V35.1 PREMIUM\n\n";
  msg+="🏆 "+jogo.liga.toUpperCase()+"\n";
  msg+="⚽ "+jogo.casa+" "+jogo.gc+"x"+jogo.gf+" "+jogo.fora+"\n";
  msg+="⏱️ "+jogo.minTxt+"\n\n";
@@ -110,59 +110,11 @@ async function enviaSinal(jogo,analise,raio){
  msg+="🎯 Precisa: "+analise.precisa+" ("+analise.chPrecisa+" alvo)\n";
  msg+="✅ ENTRADA Over 0.5 GOL 2T";
  const ok=await envia(msg);
- if(ok) sinaisDia.push(jogo.casa+" x "+jogo.fora);
+ if(ok){
+  sinaisDia.push(jogo.casa+" x "+jogo.fora);
+  resultadosDia.push({jogo:jogo.casa+" x "+jogo.fora, gc:jogo.gc, gf:jogo.gf, id:jogo.id, liga:jogo.liga, hora:Date.now(), status:"pendente"});
+ }
  return ok;
 }
 async function buscaJogos(){
  const lista=[];
- for(const liga of LIGAS){
-  try{
-   const base="https://site.api.espn.com/apis/site/v2/sports/soccer/";
-   const data=await getJson(base+liga+"/scoreboard");
-   if(!Array.isArray(data.events)) continue;
-   for(const ev of data.events){
-    const comp=ev.competitions?.[0]; if(!comp) continue;
-    const st=comp.status?.type?.name||"";
-    if(st!=="STATUS_HALFTIME"&&st!=="STATUS_SECOND_HALF") continue;
-    let minuto=num(comp.status?.clock); if(st==="STATUS_HALFTIME") minuto=45;
-    if(minuto<F.minMin||minuto>F.maxMin) continue;
-    const casaObj=comp.competitors?.find(c=>c.homeAway==="home");
-    const foraObj=comp.competitors?.find(c=>c.homeAway==="away");
-    if(!casaObj||!foraObj) continue;
-    await sleep(400);
-    const raio=await buscaRaio(liga,String(ev.id));
-    const jogo={id:String(ev.id),liga,casa:casaObj.team?.displayName||"Casa",fora:foraObj.team?.displayName||"Fora",gc:num(casaObj.score),gf:num(foraObj.score),chCasa:raio.chCasa,chFora:raio.chFora,alCasa:raio.alCasa,alFora:raio.alFora,minuto,minTxt:st==="STATUS_HALFTIME"?"INTERVALO":Math.floor(minuto)+"' "};
-    const analise=checa(jogo,raio); if(!analise.ok) continue;
-    totalAprovados++; lista.push({jogo,analise,raio});
-   }
-  }catch(e){}
- }
- return lista;
-}
-async function enviaRelatorio(){
- const data=new Date().toLocaleDateString("pt-BR");
- let txt="📋 RELATORIO DIARIO V34.9 - "+data+"\n\nScans: "+totalAprovados+"\nSinais hoje: "+sinaisDia.length+"\n\n";
- if(sinaisDia.length===0) txt+="Nenhum sinal hoje.\n"; else{txt+="SINAIS:\n"; for(let i=0;i<sinaisDia.length;i++) txt+=(i+1)+". "+sinaisDia[i]+"\n";}
- txt+="\n🤖 Robo online"; await envia(txt); sinaisDia=[]; totalAprovados=0;
-}
-function verificaHora(){
- const agora=new Date().toLocaleString("pt-BR",{timeZone:"America/Sao_Paulo"});
- const hora=(agora.split(", ")[1]||"").split(":");
- const h=parseInt(hora[0]||"0"); const m=parseInt(hora[1]||"0");
- if(h===23&&m===59&&!relatorioOk){relatorioOk=true; enviaRelatorio();}
- if(h===0&&m===0) relatorioOk=false;
-}
-async function radar(){
- ultimoScan=new Date().toISOString();
- for(const [k,v] of enviados.entries()) if(Date.now()-v>3*60*60*1000) enviados.delete(k);
- try{const res=await buscaJogos(); for(const it of res){const chave=it.jogo.liga+"_"+it.jogo.id+"_HT"; if(enviados.has(chave)) continue; if(await enviaSinal(it.jogo,it.analise,it.raio)) enviados.set(chave,Date.now());}}catch(e){console.log(e.message);}
-}
-const server=http.createServer((req,res)=>{
- res.writeHead(200,{"Content-Type":"application/json"});
- res.end(JSON.stringify({status:"online",robo:"V34.9 PREMIUM COM EMOJI",ultimoScan,totalAprovados,totalEnviados,sinaisHoje:sinaisDia.length},null,2));
-});
-server.listen(PORT,()=>{
- console.log("ROBO V34.9 ONLINE porta "+PORT);
- radar(); setInterval(radar,60000); setInterval(verificaHora,30000);
- envia("🚀 V34.9 PREMIUM COM EMOJI INICIADO - LIVE");
-});
