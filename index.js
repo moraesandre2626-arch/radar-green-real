@@ -2,15 +2,11 @@ const http = require('http');
 const PORT = process.env.PORT || 3000;
 const TOKEN = process.env.TELEGRAM_TOKEN || '';
 const CHAT = process.env.CHAT_ID || '';
-
 const LIGAS = ["bra.1","bra.2","por.1","eng.1","esp.1","ger.1","ita.1","fra.1","ned.1","bel.1","tur.1","sco.1","conmebol.libertadores","conmebol.sudamericana","usa.1","mex.1","arg.1","uefa.champions","uefa.europa"];
-
 const F = { maxGol:2, minAlvo:2, minChutes:8, minMin:40, maxMin:55, minPosse:60, minScore:6 };
-
 let ultimoScan=null, totalAprovados=0, totalEnviados=0, sinaisDia=[], resultadosDia=[], relatorioOk=false;
 const enviados=new Map();
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
-
 async function getJson(url){
  const c=new AbortController();
  const t=setTimeout(()=>c.abort(),8000);
@@ -84,8 +80,7 @@ function checa(jogo,raio){
  else if(escTime>=3) zona="Abafa Area ("+escTime+" esc)";
  else if(apTime>=15) zona="Meio-Perigoso ("+apTime+" AP)";
  return {ok:true,precisa,chPrecisa,posseTime,score,zona,cruzTime,escTime,pCasa};
-}
-async function envia(texto){
+}async function envia(texto){
  if(!TOKEN||!CHAT) return false;
  try{
   const r=await fetch("https://api.telegram.org/bot"+TOKEN+"/sendMessage",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chat_id:CHAT,text:texto})});
@@ -118,3 +113,21 @@ async function enviaSinal(jogo,analise,raio){
 }
 async function buscaJogos(){
  const lista=[];
+ for(const liga of LIGAS){
+  try{
+   const base="https://site.api.espn.com/apis/site/v2/sports/soccer/";
+   const data=await getJson(base+liga+"/scoreboard");
+   if(!Array.isArray(data.events)) continue;
+   for(const ev of data.events){
+    const comp=ev.competitions?.[0]; if(!comp) continue;
+    const st=comp.status?.type?.name||"";
+    if(st!=="STATUS_HALFTIME"&&st!=="STATUS_SECOND_HALF") continue;
+    let minuto=num(comp.status?.clock); if(st==="STATUS_HALFTIME") minuto=45;
+    if(minuto<F.minMin||minuto>F.maxMin) continue;
+    const casaObj=comp.competitors?.find(c=>c.homeAway==="home");
+    const foraObj=comp.competitors?.find(c=>c.homeAway==="away");
+    if(!casaObj||!foraObj) continue;
+    await sleep(400);
+    const raio=await buscaRaio(liga,String(ev.id));
+    const jogo={id:String(ev.id),liga,casa:casaObj.team?.displayName||"Casa",fora:foraObj.team?.displayName||"Fora",gc:num(casaObj.score),gf:num(foraObj.score),chCasa:raio.chCasa,chFora:raio.chFora,alCasa:raio.alCasa,alFora:raio.alFora,minuto,minTxt:st==="STATUS_HALFTIME"?"INTERVALO":Math.floor(minuto)+"' "};
+    const analise=checa
