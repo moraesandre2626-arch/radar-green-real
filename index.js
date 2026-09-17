@@ -1017,3 +1017,50 @@ SERVIDOR
 */
 const server =
  
+const server = http.createServer((req, res) => {
+
+  garantirNovoDia();
+
+  res.writeHead(200, {
+    'Content-Type': 'application/json'
+  });
+
+  res.end(JSON.stringify({
+    status: 'online',
+    robo: 'V34.6 60% POSSE PRESSAO',
+    ultimoScan,
+    aprovados: totalAprovados,
+    enviados: totalEnviados,
+    erros: totalErros,
+    relatorio2350: {
+      data: historicoDia.data,
+      alertas: historicoDia.enviados.length,
+      green: historicoDia.green,
+      red: historicoDia.red,
+      pendentes: historicoDia.pendentes,
+      enviado: historicoDia.relatorioEnviado
+    },
+    filtros: FILTROS
+  }, null, 2));
+});
+
+server.listen(PORT, () => {
+
+  console.log(
+    `🚀 V34.6 ONLINE — porta ${PORT}`
+  );
+
+  // Executa o radar imediatamente
+  executarRadar();
+
+  // Radar a cada 60 segundos
+  setInterval(() => {
+    executarRadar();
+  }, 60000);
+
+  // Verifica o relatório das 23:50
+  setInterval(() => {
+    verificarHorarioRelatorio();
+  }, 30000);
+
+});
