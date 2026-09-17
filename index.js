@@ -988,17 +988,29 @@ GREEN = pelo menos 1 gol após o alerta.
 
 /*
 =========================================================
-CONTROLE DO HORÁRIO 23:50
+CONTROLE DO HORÁRIO 23:50 — BRASÍLIA
 =========================================================
 */
 function verificarHorarioRelatorio() {
 
   garantirNovoDia();
 
-  const agora = new Date();
+  const agoraBrasilia =
+    new Date().toLocaleString(
+      'en-US',
+      {
+        timeZone: 'America/Sao_Paulo'
+      }
+    );
 
-  const hora = agora.getHours();
-  const minuto = agora.getMinutes();
+  const agora =
+    new Date(agoraBrasilia);
+
+  const hora =
+    agora.getHours();
+
+  const minuto =
+    agora.getMinutes();
 
   if (
     hora === 23 &&
