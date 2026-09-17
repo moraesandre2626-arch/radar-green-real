@@ -1015,8 +1015,6 @@ function verificarHorarioRelatorio() {
 SERVIDOR
 =========================================================
 */
-const server =
- 
 const server = http.createServer((req, res) => {
 
   garantirNovoDia();
@@ -1046,19 +1044,14 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, () => {
 
-  console.log(
-    `🚀 V34.6 ONLINE — porta ${PORT}`
-  );
+  console.log(`🚀 V34.6 ONLINE — porta ${PORT}`);
 
-  // Executa o radar imediatamente
   executarRadar();
 
-  // Radar a cada 60 segundos
   setInterval(() => {
     executarRadar();
   }, 60000);
 
-  // Verifica o relatório das 23:50
   setInterval(() => {
     verificarHorarioRelatorio();
   }, 30000);
