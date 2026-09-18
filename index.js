@@ -1010,6 +1010,7 @@ console.log(
 e.message
 );
 }
+
 }
 
 async function verificarResultado(
@@ -1279,6 +1280,64 @@ e.message
 const server=
 http.createServer(
 async(req,res)=>{
+
+/* ===== ROTA DE TESTE DO TELEGRAM ===== */
+
+if(req.url==='/teste'){
+
+try{
+
+await enviarTelegramTexto(
+`🧪 TESTE ROBÔ GOL 2T — V34.6
+
+✅ Telegram funcionando
+✅ Render online
+✅ Função de envio funcionando
+
+⏰ ${new Date().toLocaleString(
+'pt-BR',
+{timeZone:'America/Sao_Paulo'}
+)}`
+);
+
+res.writeHead(
+200,
+{
+'Content-Type':
+'application/json; charset=utf-8'
+}
+);
+
+res.end(
+JSON.stringify({
+status:'ok',
+mensagem:'Teste enviado para o Telegram'
+})
+);
+
+}catch(e){
+
+res.writeHead(
+500,
+{
+'Content-Type':
+'application/json; charset=utf-8'
+}
+);
+
+res.end(
+JSON.stringify({
+status:'erro',
+mensagem:e.message
+})
+);
+
+}
+
+return;
+}
+
+/* ===== FIM DA ROTA DE TESTE ===== */
 
 await garantirNovoDia();
 
