@@ -835,3 +835,131 @@ function checaJogo(j, r) {
 
   let zonaPressao =
     'Pressão
+function checaJogo(j, r) {
+  const diferenca = Math.abs(j.gols_casa - j.gols_fora);
+  if (diferenca > FILTROS.max_diferenca_gols) return { aprovado: false };
+  const time = definirTimePrecisa(j, r);
+  if (!time) return { aprovado: false };
+  const totalChutes = r.chutesCasa + r.chutesFora;
+  if (totalChutes < FILTROS.min_total_chutes_jogo) return { aprovado: false };
+  if (time.alvo < FILTROS.min_chutes_gol_time_precisa) return { aprovado: false };
+  if (time.posse < FILTROS.posse_minima_pressao) return { aprovado: false };
+  const ataques = time.ataques?? 0;
+  const cruzamentos = time.cruzamentos?? 0;
+  const escanteios = time.escanteios?? 0;
+  const scorePressao = cruzamentos + (escanteios * 2) + (ataques / 10);
+  if (scorePressao < FILTROS.min_pressao_score) return { aprovado: false };
+  let zonaPressao = 'Pressão Central';
+  if (cruzamentos >= 8 || (cruzamentos >= 5 && escanteios >= 2)) zonaPressao = `Lateral (${cruzamentos} cruz)`;
+  else if (escanteios >= 3) zonaPressao = `Abafa Área (${escanteios} esc)`;
+  else if (ataques >= 15) zonaPressao = `Meio-Perigoso (${ataques} AP)`;
+  return { aprovado: true, timePrecisa: time.nome, chutesPrecisa: time.alvo, totalChutes, possePct: time.posse, scorePressao, zonaPressao };
+}
+
+async function enviarTelegramTexto(msg){
+  if(!TELEGRAM_TOKEN||!CHAT_ID) return false;
+  const r=await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({chat_id:CHAT_ID,text:msg})});
+  const d=await r.json(); if(!d.ok) throw new Error(d.description||'Telegram recusou'); return true;
+}
+
+async function enviarTelegram(j,a,r){
+  const totalPosse=r.posseCasa+r.posseFora;
+  const pc=totalPosse>0?Math.round(r.posseCasa/totalPosse*100):50;
+  const linhaAP=r.temAP?`🔥 Ataques Perigosos: ${r.apCasa??0}x${r.apFora??0}\n`:'';
+  const linhaCruz=r.temCruz?`↗️ Cruzamentos: ${r.cruzCasa}x${r.cruzFora}\n`:'';
+  const msg=`🚨 RAIO-X GOL 2T — V35 75% POSSE
+🏆 ${j.liga.toUpperCase()}
+⚽ ${j.nome_casa} ${j.gols_casa}x${j.gols_fora} ${j.nome_fora}
+⏱️ ${j.minutoTexto}
+📊 ESTATÍSTICAS:
+🥅 Chutes: ${r.chutesCasa}x${r.chutesFora} (Total: ${a.totalChutes})
+🎯 No Alvo: ${r.alvoCasa}x${r.alvoFora}
+${linhaAP}${linhaCruz}🚩 Escanteios: ${r.escCasa}x${r.escFora}
+📊 Posse: ${pc}% x ${100-pc}%
+📍 PRESSÃO: ${a.zonaPressao}
+📈 Score: ${a.scorePressao.toFixed(1)} | Posse time: ${a.possePct}% ✅ 75%+
+🎯 Precisa: ${a.timePrecisa} (${a.chutesPrecisa} no alvo)
+📊 Enviados hoje: ${historicoDia.enviados.length + 1}`;
+  try{
+    await enviarTelegramTexto(msg);
+    await garantirNovoDia();
+    if(!historicoDia.enviados.some(x=>String(x.id)===String(j.id)&&x.liga===j.liga)){
+      historicoDia.enviados.push({id:String(j.id),liga:j.liga,casa:j.nome_casa,fora:j.nome_fora,golsCasaAlerta:j.gols_casa,golsForaAlerta:j.gols_fora,minutoAlerta:j.minuto,status:'pendente'});
+      await salvarHistorico();
+    }
+    totalEnviados = historicoDia.enviados.length;
+    console.log(`📨 Enviado: ${j.nome_casa} x ${j.nome_fora} | Total: ${totalEnviados}`);
+    return true;
+  }catch(e){totalErros++; console.log('❌ Telegram:',e.message); return false;}
+}
+
+async function buscarJogosESPN(){
+  const aprovados=[];
+  for(const liga of LIGAS_PERMITIDAS){
+    try{
+      const data=await getJson(`https://site.api.espn.com/apis/site/v2/sports/soccer/${liga}/scoreboard`);
+      if(!Array.isArray(data.events)) continue;
+      for(const ev of data.events){
+        try{
+          const comp=ev?.competitions?.[0]; if(!comp) continue;
+          const status=comp?.status?.type?.name||''; if(!['STATUS_HALFTIME','STATUS_SECOND_HALF'].includes(status)) continue;
+          let minuto=numero(comp?.status?.clock); if(status==='STATUS_HALFTIME') minuto=45;
+          if(minuto<FILTROS.minuto_minimo||minuto>FILTROS.minuto_maximo) continue;
+          const casa=comp.competitors?.find(c=>c.homeAway==='home'); const fora=comp.competitors?.find(c=>c.homeAway==='away'); if(!casa||!fora) continue;
+          await sleep(400);
+          const raio=await buscarRaioXCompleto(liga,ev.id);
+          const jogo={id:String(ev.id),liga,nome_casa:casa.team?.displayName||'Casa',nome_fora:fora.team?.displayName||'Fora',gols_casa:numero(casa.score),gols_fora:numero(fora.score),chutes_casa:raio.chutesCasa,chutes_fora:raio.chutesFora,minuto,minutoTexto:status==='STATUS_HALFTIME'?'INTERVALO':`${Math.floor(minuto)}'`};
+          const analise=checaJogo(jogo,raio); if(!analise.aprovado) continue;
+          totalAprovados++; aprovados.push({jogo,analise,raio});
+        }catch(e){}
+      }
+    }catch(e){totalErros++;}
+  }
+  return aprovados;
+}
+async function executarRadar(){
+  await garantirNovoDia(); ultimoScan=new Date().toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'}); console.log('🔎 Radar V35 75% varrendo...');
+  try{
+    const res=await buscarJogosESPN(); if(!res.length){console.log('Nenhum aprovado.'); return;}
+    for(const item of res){
+      const chave=`${item.jogo.liga}_${item.jogo.id}_HT`;
+      if(enviados.has(chave)||historicoDia.enviados.some(a=>String(a.id)===String(item.jogo.id)&&a.liga===item.jogo.liga)) continue;
+      if(await enviarTelegram(item.jogo,item.analise,item.raio)){enviados.set(chave,Date.now());}
+    }
+  }catch(e){console.log('❌ Radar:',e.message);}
+}
+async function verificarResultado(alerta){
+  try{
+    const summary=await getJson(`https://site.api.espn.com/apis/site/v2/sports/soccer/${alerta.liga}/summary?event=${alerta.id}`);
+    const comp=summary?.header?.competitions?.[0]; if(!comp) return null;
+    const status=comp?.status?.type?.name||''; if(!['STATUS_FINAL','STATUS_FULL_TIME','STATUS_FINAL_PEN'].includes(status)) return null;
+    const casa=comp.competitors?.find(c=>c.homeAway==='home'); const fora=comp.competitors?.find(c=>c.homeAway==='away'); if(!casa||!fora) return null;
+    return {green:(numero(casa.score)+numero(fora.score)) > (alerta.golsCasaAlerta+alerta.golsForaAlerta), golsCasaFinal:numero(casa.score), golsForaFinal:numero(fora.score)};
+  }catch(e){return null;}
+}
+async function enviarRelatorio2350(){
+  if(relatorioEmExecucao) return; relatorioEmExecucao=true;
+  try{
+    await garantirNovoDia(); let green=0,red=0,pendentes=0;
+    for(const a of historicoDia.enviados){
+      if(a.status!=='pendente'){if(a.status==='green')green++; if(a.status==='red')red++; continue;}
+      const r=await verificarResultado(a); if(!r){pendentes++; continue;}
+      a.status=r.green?'green':'red'; a.golsCasaFinal=r.golsCasaFinal; a.golsForaFinal=r.golsForaFinal;
+      if(r.green) green++; else red++; await sleep(300);
+    }
+    historicoDia.green=green; historicoDia.red=red; historicoDia.pendentes=pendentes;
+    const total=green+red; const perc=total>0?(green/total*100).toFixed(1):'0.0';
+    const msg=`📊 RELATÓRIO GOL 2T — V35 75%\n📅 ${historicoDia.data}\n⏰ Fechamento: 23:50\n\n📨 Alertas enviados: ${historicoDia.enviados.length}\n🟢 GREEN: ${green}\n🔴 RED: ${red}\n⏳ Pendentes: ${pendentes}\n\n📈 Aproveitamento: ${perc}% de GREEN\n🤖 FILTRO: 75% POSSE + PRESSÃO`;
+    await enviarTelegramTexto(msg); historicoDia.relatorioEnviado=true; await salvarHistorico();
+    console.log('📊 Relatório enviado!');
+  }catch(e){console.log('❌ Relatório:',e.message);}finally{relatorioEmExecucao=false;}
+}
+function verificarHorarioRelatorio(){const {hora,minuto}=horaBrasilia(); if(hora===23&&minuto===50&&!historicoDia.relatorioEnviado){enviarRelatorio2350();}}
+const server=http.createServer(async(req,res)=>{
+  if(req.url==='/teste'){try{await enviarTelegramTexto(`🧪 TESTE V35 75%\n✅ Telegram OK\n✅ Redis: ${REDIS_ATIVO?'ON':'OFF'}\n📊 Enviados hoje: ${historicoDia.enviados.length}\n⏰ ${new Date().toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'})}`); res.writeHead(200,{'Content-Type':'application/json; charset=utf-8'}); res.end(JSON.stringify({status:'ok'}));}catch(e){res.writeHead(500,{'Content-Type':'application/json; charset=utf-8'}); res.end(JSON.stringify({status:'erro',mensagem:e.message}));} return;}
+  if(req.url==='/relatorio'){await enviarRelatorio2350(); res.writeHead(200,{'Content-Type':'application/json; charset=utf-8'}); res.end(JSON.stringify({status:'ok',total:historicoDia.enviados.length})); return;}
+  await garantirNovoDia();
+  res.writeHead(200,{'Content-Type':'application/json; charset=utf-8'});
+  res.end(JSON.stringify({status:'online',robo:'V35 75% POSSE',ultimoScan,enviados:historicoDia.enviados.length,redis:REDIS_ATIVO,filtros:FILTROS,relatorio2350:{data:historicoDia.data,alertas:historicoDia.enviados.length,green:historicoDia.green,red:historicoDia.red}},null,2));
+});
+server.listen(PORT,async()=>{console.log(`🚀 V35 75% ONLINE porta ${PORT}`); await carregarHistorico(); executarRadar(); setInterval(executarRadar,60000); setInterval(verificarHorarioRelatorio,30000);});
