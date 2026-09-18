@@ -31,9 +31,17 @@ const enviados = new Map();
 /*
 =========================================================
 CONTROLE DIÁRIO DOS ALERTAS
+HORÁRIO DE BRASÍLIA
 =========================================================
 */
-let dataControle = new Date().toLocaleDateString('pt-BR');
+
+function dataBrasilia() {
+  return new Date().toLocaleDateString('pt-BR', {
+    timeZone: 'America/Sao_Paulo'
+  });
+}
+
+let dataControle = dataBrasilia();
 
 let historicoDia = {
   data: dataControle,
@@ -45,9 +53,11 @@ let historicoDia = {
 };
 
 function garantirNovoDia() {
-  const hoje = new Date().toLocaleDateString('pt-BR');
+
+  const hoje = dataBrasilia();
 
   if (hoje !== historicoDia.data) {
+
     historicoDia = {
       data: hoje,
       enviados: [],
@@ -59,17 +69,21 @@ function garantirNovoDia() {
 
     dataControle = hoje;
 
-    console.log(`📅 Novo dia iniciado: ${hoje}`);
+    console.log(
+      `📅 Novo dia iniciado em Brasília: ${hoje}`
+    );
   }
 }
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 async function getJson(url) {
+
   const c = new AbortController();
   const t = setTimeout(() => c.abort(), 8000);
 
   try {
+
     const r = await fetch(url, {
       headers: {
         'User-Agent': 'Mozilla/5.0'
@@ -77,16 +91,20 @@ async function getJson(url) {
       signal: c.signal
     });
 
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    if (!r.ok) {
+      throw new Error(`HTTP ${r.status}`);
+    }
 
     return await r.json();
 
   } finally {
+
     clearTimeout(t);
   }
 }
 
 function numero(v) {
+
   const n = parseFloat(
     String(v ?? 0)
       .replace(',', '.')
@@ -97,16 +115,25 @@ function numero(v) {
 }
 
 function pegaStat(S, nomes) {
-  if (!Array.isArray(S)) return null;
+
+  if (!Array.isArray(S)) {
+    return null;
+  }
 
   for (let nome of nomes) {
+
     const s = S.find(x =>
       x.name?.toLowerCase() === nome.toLowerCase() ||
       x.abbreviation?.toLowerCase() === nome.toLowerCase()
     );
 
     if (s) {
-      return numero(s.displayValue ?? s.value ?? 0);
+
+      return numero(
+        s.displayValue ??
+        s.value ??
+        0
+      );
     }
   }
 
@@ -118,23 +145,32 @@ function pegaStat(S, nomes) {
 RAIO-X COMPLETO
 =========================================================
 */
+
 async function buscarRaioXCompleto(liga, eventId) {
 
   const raio = {
+
     chutesCasa: 0,
     chutesFora: 0,
+
     alvoCasa: 0,
     alvoFora: 0,
+
     posseCasa: 0,
     posseFora: 0,
+
     escCasa: 0,
     escFora: 0,
+
     amarelosCasa: 0,
     amarelosFora: 0,
+
     cruzCasa: 0,
     cruzFora: 0,
+
     apCasa: null,
     apFora: null,
+
     temAP: false,
     temCruz: false
   };
@@ -145,53 +181,80 @@ async function buscarRaioXCompleto(liga, eventId) {
       `https://site.api.espn.com/apis/site/v2/sports/soccer/${liga}/summary?event=${eventId}`
     );
 
-    const teams = summary?.boxscore?.teams || [];
+    const teams =
+      summary?.boxscore?.teams || [];
 
     for (let i = 0; i < teams.length; i++) {
 
       const bloco = teams[i];
 
-      const id = String(bloco?.team?.id || '');
+      const id =
+        String(bloco?.team?.id || '');
 
-      let lado = i === 0 ? 'home' : 'away';
+      let lado =
+        i === 0 ? 'home' : 'away';
 
       const comp =
         summary?.header?.competitions?.[0]?.competitors
           ?.find(c => String(c.team?.id) === id);
 
-      if (comp) lado = comp.homeAway;
+      if (comp) {
+        lado = comp.homeAway;
+      }
 
-      const S = bloco?.statistics || [];
+      const S =
+        bloco?.statistics || [];
 
       const chutes =
-        pegaStat(S, ['totalShots', 'shots']) ?? 0;
+        pegaStat(
+          S,
+          ['totalShots', 'shots']
+        ) ?? 0;
 
       const alvo =
-        pegaStat(S, ['shotsOnTarget', 'shotsOnGoal']) ?? 0;
+        pegaStat(
+          S,
+          ['shotsOnTarget', 'shotsOnGoal']
+        ) ?? 0;
 
       const posse =
-        pegaStat(S, ['possessionPct', 'possession']) ?? 0;
+        pegaStat(
+          S,
+          ['possessionPct', 'possession']
+        ) ?? 0;
 
       const esc =
-        pegaStat(S, ['wonCorners', 'cornerKicks']) ?? 0;
+        pegaStat(
+          S,
+          ['wonCorners', 'cornerKicks']
+        ) ?? 0;
 
       const amarelos =
-        pegaStat(S, ['yellowCards']) ?? 0;
+        pegaStat(
+          S,
+          ['yellowCards']
+        ) ?? 0;
 
       const ap =
-        pegaStat(S, [
-          'dangerousAttacks',
-          'dangerousAttack',
-          'attack'
-        ]);
+        pegaStat(
+          S,
+          [
+            'dangerousAttacks',
+            'dangerousAttack',
+            'attack'
+          ]
+        );
 
       const cruz =
-        pegaStat(S, [
-          'crosses',
-          'totalCrosses',
-          'totalCross',
-          'cross'
-        ]);
+        pegaStat(
+          S,
+          [
+            'crosses',
+            'totalCrosses',
+            'totalCross',
+            'cross'
+          ]
+        );
 
       if (lado === 'home') {
 
@@ -202,11 +265,13 @@ async function buscarRaioXCompleto(liga, eventId) {
         raio.amarelosCasa = amarelos;
 
         if (cruz !== null) {
+
           raio.cruzCasa = cruz;
           raio.temCruz = true;
         }
 
         if (ap !== null) {
+
           raio.apCasa = ap;
           raio.temAP = true;
         }
@@ -220,11 +285,13 @@ async function buscarRaioXCompleto(liga, eventId) {
         raio.amarelosFora = amarelos;
 
         if (cruz !== null) {
+
           raio.cruzFora = cruz;
           raio.temCruz = true;
         }
 
         if (ap !== null) {
+
           raio.apFora = ap;
           raio.temAP = true;
         }
@@ -241,9 +308,11 @@ async function buscarRaioXCompleto(liga, eventId) {
 FILTRO
 =========================================================
 */
+
 function checaJogo(jogo, raio) {
 
   if (!LIGAS_PERMITIDAS.includes(jogo.liga)) {
+
     return {
       aprovado: false,
       motivo: 'liga'
@@ -251,9 +320,13 @@ function checaJogo(jogo, raio) {
   }
 
   if (
-    Math.abs(jogo.gols_casa - jogo.gols_fora) >
+    Math.abs(
+      jogo.gols_casa -
+      jogo.gols_fora
+    ) >
     FILTROS.max_diferenca_gols
   ) {
+
     return {
       aprovado: false,
       motivo: 'placar'
@@ -261,9 +334,13 @@ function checaJogo(jogo, raio) {
   }
 
   if (
-    (jogo.chutes_casa + jogo.chutes_fora) <
+    (
+      jogo.chutes_casa +
+      jogo.chutes_fora
+    ) <
     FILTROS.min_total_chutes_jogo
   ) {
+
     return {
       aprovado: false,
       motivo: 'chutes'
@@ -271,11 +348,17 @@ function checaJogo(jogo, raio) {
   }
 
   const totalPosse =
-    raio.posseCasa + raio.posseFora;
+    raio.posseCasa +
+    raio.posseFora;
 
   const posseCasaPct =
     totalPosse > 0
-      ? Math.round((raio.posseCasa / totalPosse) * 100)
+      ? Math.round(
+          (
+            raio.posseCasa /
+            totalPosse
+          ) * 100
+        )
       : 50;
 
   const posseForaPct =
@@ -288,28 +371,57 @@ function checaJogo(jogo, raio) {
   let escTime = 0;
   let apTime = 0;
 
-  if (jogo.gols_casa < jogo.gols_fora) {
+  if (
+    jogo.gols_casa <
+    jogo.gols_fora
+  ) {
 
-    timePrecisa = jogo.nome_casa;
-    chutesPrecisa = jogo.alvo_casa;
-    posseTime = posseCasaPct;
-    cruzTime = raio.cruzCasa;
-    escTime = raio.escCasa;
-    apTime = raio.apCasa || 0;
+    timePrecisa =
+      jogo.nome_casa;
 
-  } else if (jogo.gols_fora < jogo.gols_casa) {
+    chutesPrecisa =
+      jogo.alvo_casa;
 
-    timePrecisa = jogo.nome_fora;
-    chutesPrecisa = jogo.alvo_fora;
-    posseTime = posseForaPct;
-    cruzTime = raio.cruzFora;
-    escTime = raio.escFora;
-    apTime = raio.apFora || 0;
+    posseTime =
+      posseCasaPct;
+
+    cruzTime =
+      raio.cruzCasa;
+
+    escTime =
+      raio.escCasa;
+
+    apTime =
+      raio.apCasa || 0;
+
+  } else if (
+    jogo.gols_fora <
+    jogo.gols_casa
+  ) {
+
+    timePrecisa =
+      jogo.nome_fora;
+
+    chutesPrecisa =
+      jogo.alvo_fora;
+
+    posseTime =
+      posseForaPct;
+
+    cruzTime =
+      raio.cruzFora;
+
+    escTime =
+      raio.escFora;
+
+    apTime =
+      raio.apFora || 0;
 
   } else {
 
     const casaMelhor =
-      jogo.alvo_casa >= jogo.alvo_fora;
+      jogo.alvo_casa >=
+      jogo.alvo_fora;
 
     timePrecisa =
       casaMelhor
@@ -347,6 +459,7 @@ function checaJogo(jogo, raio) {
     chutesPrecisa <
     FILTROS.min_chutes_gol_time_precisa
   ) {
+
     return {
       aprovado: false,
       motivo: 'alvo'
@@ -362,6 +475,7 @@ function checaJogo(jogo, raio) {
     scorePressao <
     FILTROS.min_pressao_score
   ) {
+
     return {
       aprovado: false,
       motivo:
@@ -373,6 +487,7 @@ function checaJogo(jogo, raio) {
     posseTime <
     FILTROS.posse_minima_pressao
   ) {
+
     return {
       aprovado: false,
       motivo:
@@ -384,31 +499,47 @@ function checaJogo(jogo, raio) {
 
   if (
     cruzTime >= 8 ||
-    (cruzTime >= 5 && escTime >= 2)
+    (
+      cruzTime >= 5 &&
+      escTime >= 2
+    )
   ) {
+
     zonaPressao =
       `Lateral (${cruzTime} cruz)`;
 
-  } else if (escTime >= 3) {
+  } else if (
+    escTime >= 3
+  ) {
 
     zonaPressao =
       `Abafa Área (${escTime} esc)`;
 
-  } else if (apTime >= 15) {
+  } else if (
+    apTime >= 15
+  ) {
 
     zonaPressao =
       `Meio-Perigoso (${apTime} AP)`;
   }
 
   return {
+
     aprovado: true,
+
     timePrecisa,
+
     chutesPrecisa,
+
     totalChutes:
       jogo.chutes_casa +
       jogo.chutes_fora,
-    possePct: posseTime,
+
+    possePct:
+      posseTime,
+
     scorePressao,
+
     zonaPressao
   };
 }
@@ -418,18 +549,36 @@ function checaJogo(jogo, raio) {
 TELEGRAM — ALERTA
 =========================================================
 */
-async function enviarTelegram(jogo, analise, raio) {
 
-  if (!TELEGRAM_TOKEN || !CHAT_ID) {
+async function enviarTelegram(
+  jogo,
+  analise,
+  raio
+) {
+
+  if (
+    !TELEGRAM_TOKEN ||
+    !CHAT_ID
+  ) {
     return false;
   }
 
   const pCasa =
-    (raio.posseCasa + raio.posseFora) > 0
+    (
+      raio.posseCasa +
+      raio.posseFora
+    ) > 0
+
       ? Math.round(
-          (raio.posseCasa /
-          (raio.posseCasa + raio.posseFora)) * 100
+          (
+            raio.posseCasa /
+            (
+              raio.posseCasa +
+              raio.posseFora
+            )
+          ) * 100
         )
+
       : 50;
 
   const linhaAP =
@@ -464,24 +613,31 @@ ${linhaAP}${linhaCruz}🚩 Escanteios: ${raio.escCasa}x${raio.escFora}
 
   try {
 
-    const r = await fetch(
-      `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          chat_id: CHAT_ID,
-          text: msg
-        })
-      }
-    );
+    const r =
+      await fetch(
+        `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`,
+        {
+          method: 'POST',
 
-    const d = await r.json();
+          headers: {
+            'Content-Type':
+              'application/json'
+          },
+
+          body: JSON.stringify({
+            chat_id: CHAT_ID,
+            text: msg
+          })
+        }
+      );
+
+    const d =
+      await r.json();
 
     if (!d.ok) {
-      throw new Error(d.description);
+      throw new Error(
+        d.description
+      );
     }
 
     totalEnviados++;
@@ -499,14 +655,30 @@ ${linhaAP}${linhaCruz}🚩 Escanteios: ${raio.escCasa}x${raio.escFora}
     garantirNovoDia();
 
     historicoDia.enviados.push({
-      id: String(jogo.id),
-      liga: jogo.liga,
-      casa: jogo.nome_casa,
-      fora: jogo.nome_fora,
-      golsCasaAlerta: jogo.gols_casa,
-      golsForaAlerta: jogo.gols_fora,
-      minutoAlerta: jogo.minuto,
-      status: 'pendente'
+
+      id:
+        String(jogo.id),
+
+      liga:
+        jogo.liga,
+
+      casa:
+        jogo.nome_casa,
+
+      fora:
+        jogo.nome_fora,
+
+      golsCasaAlerta:
+        jogo.gols_casa,
+
+      golsForaAlerta:
+        jogo.gols_fora,
+
+      minutoAlerta:
+        jogo.minuto,
+
+      status:
+        'pendente'
     });
 
     return true;
@@ -528,31 +700,46 @@ ${linhaAP}${linhaCruz}🚩 Escanteios: ${raio.escCasa}x${raio.escFora}
 BUSCAR JOGOS ESPN
 =========================================================
 */
+
 async function buscarJogosESPN() {
 
   const aprovados = [];
 
-  for (const liga of LIGAS_PERMITIDAS) {
+  for (
+    const liga of LIGAS_PERMITIDAS
+  ) {
 
     try {
 
-      const data = await getJson(
-        `https://site.api.espn.com/apis/site/v2/sports/soccer/${liga}/scoreboard`
-      );
+      const data =
+        await getJson(
+          `https://site.api.espn.com/apis/site/v2/sports/soccer/${liga}/scoreboard`
+        );
 
-      if (!Array.isArray(data.events)) continue;
+      if (
+        !Array.isArray(
+          data.events
+        )
+      ) {
+        continue;
+      }
 
-      for (const ev of data.events) {
+      for (
+        const ev of data.events
+      ) {
 
         try {
 
           const comp =
             ev?.competitions?.[0];
 
-          if (!comp) continue;
+          if (!comp) {
+            continue;
+          }
 
           const status =
-            comp?.status?.type?.name || '';
+            comp?.status?.type?.name ||
+            '';
 
           if (
             ![
@@ -564,30 +751,43 @@ async function buscarJogosESPN() {
           }
 
           let minuto =
-            numero(comp?.status?.clock);
+            numero(
+              comp?.status?.clock
+            );
 
-          if (status === 'STATUS_HALFTIME') {
+          if (
+            status ===
+            'STATUS_HALFTIME'
+          ) {
             minuto = 45;
           }
 
           if (
-            minuto < FILTROS.minuto_minimo ||
-            minuto > FILTROS.minuto_maximo
+            minuto <
+            FILTROS.minuto_minimo ||
+            minuto >
+            FILTROS.minuto_maximo
           ) {
             continue;
           }
 
           const casa =
             comp.competitors?.find(
-              c => c.homeAway === 'home'
+              c =>
+                c.homeAway ===
+                'home'
             );
 
           const fora =
             comp.competitors?.find(
-              c => c.homeAway === 'away'
+              c =>
+                c.homeAway ===
+                'away'
             );
 
-          if (!casa || !fora) continue;
+          if (!casa || !fora) {
+            continue;
+          }
 
           await sleep(400);
 
@@ -598,28 +798,46 @@ async function buscarJogosESPN() {
             );
 
           const jogo = {
-            id: String(ev.id),
+
+            id:
+              String(ev.id),
+
             liga,
+
             nome_casa:
-              casa?.team?.displayName || 'Casa',
+              casa?.team?.displayName ||
+              'Casa',
+
             nome_fora:
-              fora?.team?.displayName || 'Fora',
+              fora?.team?.displayName ||
+              'Fora',
+
             gols_casa:
               numero(casa.score),
+
             gols_fora:
               numero(fora.score),
+
             chutes_casa:
               raioTemp.chutesCasa,
+
             chutes_fora:
               raioTemp.chutesFora,
+
             alvo_casa:
               raioTemp.alvoCasa,
+
             alvo_fora:
               raioTemp.alvoFora,
+
             minuto,
+
             minutoTexto:
-              status === 'STATUS_HALFTIME'
+              status ===
+              'STATUS_HALFTIME'
+
                 ? 'INTERVALO'
+
                 : `${Math.floor(minuto)}'`
           };
 
@@ -629,11 +847,16 @@ async function buscarJogosESPN() {
               raioTemp
             );
 
-          if (!analise.aprovado) {
+          if (
+            !analise.aprovado
+          ) {
 
             if (
-              analise.motivo?.includes('posse')
+              analise.motivo?.includes(
+                'posse'
+              )
             ) {
+
               console.log(
                 `🚫 Posse <60%: ${jogo.nome_casa} ${jogo.gols_casa}x${jogo.gols_fora} ${jogo.nome_fora} - ${analise.motivo}`
               );
@@ -645,9 +868,13 @@ async function buscarJogosESPN() {
           totalAprovados++;
 
           aprovados.push({
+
             jogo,
+
             analise,
-            raio: raioTemp
+
+            raio:
+              raioTemp
           });
 
         } catch (e) {}
@@ -667,25 +894,34 @@ async function buscarJogosESPN() {
 EXECUTAR RADAR
 =========================================================
 */
+
 async function executarRadar() {
 
   garantirNovoDia();
 
   ultimoScan =
-    new Date().toISOString();
+    new Date().toLocaleString(
+      'pt-BR',
+      {
+        timeZone:
+          'America/Sao_Paulo'
+      }
+    );
 
   console.log(
     `\n🔎 Radar V34.6 varrendo...`
   );
 
   for (
-    const [id, t] of enviados.entries()
+    const [id, t]
+    of enviados.entries()
   ) {
 
     if (
       Date.now() - t >
       3 * 60 * 60 * 1000
     ) {
+
       enviados.delete(id);
     }
   }
@@ -705,14 +941,20 @@ async function executarRadar() {
     }
 
     for (
-      const { jogo, analise, raio }
+      const {
+        jogo,
+        analise,
+        raio
+      }
       of res
     ) {
 
       const chave =
         `${jogo.liga}_${jogo.id}_HT`;
 
-      if (enviados.has(chave)) {
+      if (
+        enviados.has(chave)
+      ) {
         continue;
       }
 
@@ -744,7 +986,10 @@ async function executarRadar() {
 VERIFICAR GREEN / RED
 =========================================================
 */
-async function verificarResultado(alerta) {
+
+async function verificarResultado(
+  alerta
+) {
 
   try {
 
@@ -761,7 +1006,8 @@ async function verificarResultado(alerta) {
     }
 
     const status =
-      comp?.status?.type?.name || '';
+      comp?.status?.type?.name ||
+      '';
 
     const encerrado =
       [
@@ -776,12 +1022,16 @@ async function verificarResultado(alerta) {
 
     const casa =
       comp.competitors?.find(
-        c => c.homeAway === 'home'
+        c =>
+          c.homeAway ===
+          'home'
       );
 
     const fora =
       comp.competitors?.find(
-        c => c.homeAway === 'away'
+        c =>
+          c.homeAway ===
+          'away'
       );
 
     if (!casa || !fora) {
@@ -804,16 +1054,21 @@ async function verificarResultado(alerta) {
 
     /*
     GREEN:
-    houve pelo menos 1 gol depois do momento
-    em que o alerta foi enviado.
+    houve pelo menos 1 gol depois
+    do momento em que o alerta
+    foi enviado.
     */
 
     const green =
-      golsFinal > golsAlerta;
+      golsFinal >
+      golsAlerta;
 
     return {
+
       green,
+
       golsCasaFinal,
+
       golsForaFinal
     };
 
@@ -830,13 +1085,17 @@ async function verificarResultado(alerta) {
 /*
 =========================================================
 RELATÓRIO DAS 23:50
+HORÁRIO DE BRASÍLIA
 =========================================================
 */
+
 async function enviarRelatorio2350() {
 
   garantirNovoDia();
 
-  if (historicoDia.relatorioEnviado) {
+  if (
+    historicoDia.relatorioEnviado
+  ) {
     return;
   }
 
@@ -849,19 +1108,36 @@ async function enviarRelatorio2350() {
   let pendentes = 0;
 
   for (
-    const alerta of historicoDia.enviados
+    const alerta
+    of historicoDia.enviados
   ) {
 
-    if (alerta.status !== 'pendente') {
+    if (
+      alerta.status !==
+      'pendente'
+    ) {
 
-      if (alerta.status === 'green') green++;
-      if (alerta.status === 'red') red++;
+      if (
+        alerta.status ===
+        'green'
+      ) {
+        green++;
+      }
+
+      if (
+        alerta.status ===
+        'red'
+      ) {
+        red++;
+      }
 
       continue;
     }
 
     const resultado =
-      await verificarResultado(alerta);
+      await verificarResultado(
+        alerta
+      );
 
     if (!resultado) {
 
@@ -870,9 +1146,12 @@ async function enviarRelatorio2350() {
       continue;
     }
 
-    if (resultado.green) {
+    if (
+      resultado.green
+    ) {
 
-      alerta.status = 'green';
+      alerta.status =
+        'green';
 
       alerta.golsCasaFinal =
         resultado.golsCasaFinal;
@@ -884,7 +1163,8 @@ async function enviarRelatorio2350() {
 
     } else {
 
-      alerta.status = 'red';
+      alerta.status =
+        'red';
 
       alerta.golsCasaFinal =
         resultado.golsCasaFinal;
@@ -898,16 +1178,28 @@ async function enviarRelatorio2350() {
     await sleep(300);
   }
 
-  historicoDia.green = green;
-  historicoDia.red = red;
-  historicoDia.pendentes = pendentes;
+  historicoDia.green =
+    green;
+
+  historicoDia.red =
+    red;
+
+  historicoDia.pendentes =
+    pendentes;
 
   const totalFinalizados =
     green + red;
 
   const percentual =
     totalFinalizados > 0
-      ? ((green / totalFinalizados) * 100).toFixed(1)
+
+      ? (
+          (
+            green /
+            totalFinalizados
+          ) * 100
+        ).toFixed(1)
+
       : '0.0';
 
   const totalAlertas =
@@ -934,13 +1226,17 @@ GREEN = pelo menos 1 gol após o alerta.
 🤖 ROBÔ V34.6
 60% POSSE + PRESSÃO`;
 
-  if (!TELEGRAM_TOKEN || !CHAT_ID) {
+  if (
+    !TELEGRAM_TOKEN ||
+    !CHAT_ID
+  ) {
 
     console.log(
       '\n' + msg
     );
 
-    historicoDia.relatorioEnviado = true;
+    historicoDia.relatorioEnviado =
+      true;
 
     return;
   }
@@ -952,13 +1248,18 @@ GREEN = pelo menos 1 gol após o alerta.
         `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`,
         {
           method: 'POST',
+
           headers: {
             'Content-Type':
               'application/json'
           },
+
           body: JSON.stringify({
-            chat_id: CHAT_ID,
-            text: msg
+            chat_id:
+              CHAT_ID,
+
+            text:
+              msg
           })
         }
       );
@@ -967,10 +1268,14 @@ GREEN = pelo menos 1 gol após o alerta.
       await r.json();
 
     if (!d.ok) {
-      throw new Error(d.description);
+
+      throw new Error(
+        d.description
+      );
     }
 
-    historicoDia.relatorioEnviado = true;
+    historicoDia.relatorioEnviado =
+      true;
 
     console.log(
       '📊 Relatório 23:50 enviado com sucesso!'
@@ -988,9 +1293,11 @@ GREEN = pelo menos 1 gol após o alerta.
 
 /*
 =========================================================
-CONTROLE DO HORÁRIO 23:50 — BRASÍLIA
+CONTROLE DO HORÁRIO 23:50
+HORÁRIO DE BRASÍLIA
 =========================================================
 */
+
 function verificarHorarioRelatorio() {
 
   garantirNovoDia();
@@ -999,12 +1306,15 @@ function verificarHorarioRelatorio() {
     new Date().toLocaleString(
       'en-US',
       {
-        timeZone: 'America/Sao_Paulo'
+        timeZone:
+          'America/Sao_Paulo'
       }
     );
 
   const agora =
-    new Date(agoraBrasilia);
+    new Date(
+      agoraBrasilia
+    );
 
   const hora =
     agora.getHours();
@@ -1027,45 +1337,95 @@ function verificarHorarioRelatorio() {
 SERVIDOR
 =========================================================
 */
-const server = http.createServer((req, res) => {
 
-  garantirNovoDia();
+const server =
+  http.createServer(
+    (req, res) => {
 
-  res.writeHead(200, {
-    'Content-Type': 'application/json'
-  });
+      garantirNovoDia();
 
-  res.end(JSON.stringify({
-    status: 'online',
-    robo: 'V34.6 60% POSSE PRESSAO',
-    ultimoScan,
-    aprovados: totalAprovados,
-    enviados: totalEnviados,
-    erros: totalErros,
-    relatorio2350: {
-      data: historicoDia.data,
-      alertas: historicoDia.enviados.length,
-      green: historicoDia.green,
-      red: historicoDia.red,
-      pendentes: historicoDia.pendentes,
-      enviado: historicoDia.relatorioEnviado
-    },
-    filtros: FILTROS
-  }, null, 2));
-});
+      res.writeHead(
+        200,
+        {
+          'Content-Type':
+            'application/json'
+        }
+      );
 
-server.listen(PORT, () => {
+      res.end(
+        JSON.stringify(
+          {
+            status:
+              'online',
 
-  console.log(`🚀 V34.6 ONLINE — porta ${PORT}`);
+            robo:
+              'V34.6 60% POSSE PRESSAO',
 
-  executarRadar();
+            ultimoScan,
 
-  setInterval(() => {
+            aprovados:
+              totalAprovados,
+
+            enviados:
+              totalEnviados,
+
+            erros:
+              totalErros,
+
+            relatorio2350: {
+
+              data:
+                historicoDia.data,
+
+              alertas:
+                historicoDia.enviados.length,
+
+              green:
+                historicoDia.green,
+
+              red:
+                historicoDia.red,
+
+              pendentes:
+                historicoDia.pendentes,
+
+              enviado:
+                historicoDia.relatorioEnviado
+            },
+
+            filtros:
+              FILTROS
+
+          },
+          null,
+          2
+        )
+      );
+    }
+  );
+
+server.listen(
+  PORT,
+  () => {
+
+    console.log(
+      `🚀 V34.6 ONLINE — porta ${PORT}`
+    );
+
     executarRadar();
-  }, 60000);
 
-  setInterval(() => {
-    verificarHorarioRelatorio();
-  }, 30000);
+    setInterval(
+      () => {
+        executarRadar();
+      },
+      60000
+    );
 
-});
+    setInterval(
+      () => {
+        verificarHorarioRelatorio();
+      },
+      30000
+    );
+  }
+);
