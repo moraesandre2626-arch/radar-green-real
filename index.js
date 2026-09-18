@@ -20,12 +20,13 @@ const REDIS_TOKEN =
   process.env.UPSTASH_REDIS_REST_TOKEN ||
   '';
 
-const REDIS_ATIVO = !!(REDIS_URL && REDIS_TOKEN);
+const REDIS_ATIVO =
+  !!(REDIS_URL && REDIS_TOKEN);
 
 
-// ============================================================
-// LIGAS
-// ============================================================
+// ======================================================
+// CONFIGURAÇÃO
+// ======================================================
 
 const LIGAS_PERMITIDAS = [
   'bra.1',
@@ -49,97 +50,32 @@ const LIGAS_PERMITIDAS = [
   'uefa.europa'
 ];
 
-
-// ============================================================
-// FILTROS V35
-// ============================================================
-
 const FILTROS = {
+  diferencaMaxima: 2,
+  chutesAlvoMinimo: 2,
+  chutesTotaisMinimo: 8,
+  minutoMinimo: 40,
+  minutoMaximo: 65,
 
-  // Diferença máxima do placar
-  max_diferenca_gols: 2,
+  // REGRA PRINCIPAL:
+  posseMinima: 60,
 
-  // Time que precisa do gol
-  min_chutes_gol_time_precisa: 2,
-
-  // Chutes totais da partida
-  min_total_chutes_jogo: 8,
-
-  // Janela de análise
-  minuto_minimo: 40,
-  minuto_maximo: 65,
-
-  // POSSE MÍNIMA DO TIME QUE ESTÁ PRESSIONANDO
-  posse_minima_pressao: 60,
-
-  // Score mínimo de pressão
-  min_pressao_score: 6
+  scoreMinimo: 6
 };
 
 
-// ============================================================
+// ======================================================
 // CONTROLES
-// ============================================================
+// ======================================================
 
 let ultimoScan = null;
-let totalAprovados = 0;
-let totalEnviados = 0;
-let totalErros = 0;
-let relatorioEmExecucao = false;
+let executando = false;
+let relatorioExecutando = false;
 
-const enviados = new Map();
-
-const sleep = ms =>
-  new Promise(resolve => setTimeout(resolve, ms));
-
-
-// ============================================================
-// HORÁRIO DE BRASÍLIA
-// ============================================================
-
-function dataBrasilia() {
-
-  return new Intl.DateTimeFormat(
-    'pt-BR',
-    {
-      timeZone: 'America/Sao_Paulo',
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit'
-    }
-  ).format(new Date());
-}
-
-
-function horaBrasilia() {
-
-  const partes = new Intl.DateTimeFormat(
-    'en-US',
-    {
-      timeZone: 'America/Sao_Paulo',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false
-    }
-  ).formatToParts(new Date());
-
-  return {
-    hora: Number(
-      partes.find(x => x.type === 'hour')?.value || 0
-    ),
-    minuto: Number(
-      partes.find(x => x.type === 'minute')?.value || 0
-    )
-  };
-}
-
-
-// ============================================================
-// HISTÓRICO DO DIA
-// ============================================================
+const enviados = new Set();
 
 let historicoDia = {
-  data: dataBrasilia(),
+  data: '',
   enviados: [],
   green: 0,
   red: 0,
@@ -148,23 +84,47 @@ let historicoDia = {
 };
 
 
-function chaveHistorico(data) {
+// ======================================================
+// DATA / HORA BRASÍLIA
+// ======================================================
 
-  return `gol2t:v35:historico:${data}`;
+function dataBrasilia() {
+  return new Intl.DateTimeFormat('pt-BR', {
+    timeZone: 'America/Sao_Paulo',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).format(new Date());
+}
+
+function horaBrasilia() {
+  const partes = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Sao_Paulo',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  }).formatToParts(new Date());
+
+  return {
+    hora: Number(partes.find(x => x.type === 'hour')?.value || 0),
+    minuto: Number(partes.find(x => x.type === 'minute')?.value || 0)
+  };
 }
 
 
-// ============================================================
+// ======================================================
 // REDIS
-// ============================================================
+// ======================================================
+
+function chaveRedis() {
+  return `gol2t:v35:historico:${historicoDia.data}`;
+}
 
 async function redisGet(chave) {
-
   if (!REDIS_ATIVO) return null;
 
   try {
-
-    const resposta = await fetch(
+    const r = await fetch(
       `${REDIS_URL}/get/${encodeURIComponent(chave)}`,
       {
         headers: {
@@ -173,127 +133,77 @@ async function redisGet(chave) {
       }
     );
 
-    if (!resposta.ok) {
-      throw new Error(`HTTP ${resposta.status}`);
+    if (!r.ok) {
+      throw new Error(`HTTP ${r.status}`);
     }
 
-    const dados = await resposta.json();
+    const d = await r.json();
+    return d.result ?? null;
 
-    return dados.result ?? null;
-
-  } catch (erro) {
-
-    console.log(
-      '⚠️ Redis GET:',
-      erro.message
-    );
-
+  } catch (e) {
+    console.log('Redis GET:', e.message);
     return null;
   }
 }
 
-
 async function redisSet(chave, valor) {
-
   if (!REDIS_ATIVO) return false;
 
   try {
-
-    const resposta = await fetch(
+    const r = await fetch(
       `${REDIS_URL}/set/${encodeURIComponent(chave)}`,
       {
         method: 'POST',
-
         headers: {
           Authorization: `Bearer ${REDIS_TOKEN}`,
           'Content-Type': 'text/plain'
         },
-
         body: valor
       }
     );
 
-    if (!resposta.ok) {
-      throw new Error(`HTTP ${resposta.status}`);
+    if (!r.ok) {
+      throw new Error(`HTTP ${r.status}`);
     }
 
-    const dados = await resposta.json();
+    const d = await r.json();
+    return d.result === 'OK';
 
-    return dados.result === 'OK';
-
-  } catch (erro) {
-
-    console.log(
-      '⚠️ Redis SET:',
-      erro.message
-    );
-
+  } catch (e) {
+    console.log('Redis SET:', e.message);
     return false;
   }
 }
 
-
 async function salvarHistorico() {
-
   if (!REDIS_ATIVO) return;
 
   await redisSet(
-    chaveHistorico(historicoDia.data),
+    chaveRedis(),
     JSON.stringify(historicoDia)
   );
 }
 
-
-function reconstruirMapa() {
-
-  enviados.clear();
-
-  for (const aposta of historicoDia.enviados) {
-
-    if (
-      aposta?.id &&
-      aposta?.liga
-    ) {
-
-      enviados.set(
-        `${aposta.liga}_${aposta.id}_HT`,
-        Date.now()
-      );
-    }
-  }
-}
-
-
 async function carregarHistorico() {
-
   const hoje = dataBrasilia();
 
   historicoDia.data = hoje;
 
   if (!REDIS_ATIVO) {
-
-    console.log(
-      '⚠️ Redis não configurado.'
-    );
-
+    console.log('Redis não configurado.');
     return;
   }
 
   const salvo = await redisGet(
-    chaveHistorico(hoje)
+    `gol2t:v35:historico:${hoje}`
   );
 
   if (!salvo) {
-
-    console.log(
-      '🟢 Redis conectado; sem histórico de hoje.'
-    );
-
+    console.log('Redis conectado. Nenhum histórico hoje.');
     return;
   }
 
   try {
-
     const dados =
       typeof salvo === 'string'
         ? JSON.parse(salvo)
@@ -304,58 +214,53 @@ async function carregarHistorico() {
       dados.data === hoje &&
       Array.isArray(dados.enviados)
     ) {
-
       historicoDia = {
-
         data: hoje,
-
         enviados: dados.enviados,
-
-        green:
-          Number(dados.green) || 0,
-
-        red:
-          Number(dados.red) || 0,
-
-        pendentes:
-          Number(dados.pendentes) || 0,
-
-        relatorioEnviado:
-          !!dados.relatorioEnviado
+        green: Number(dados.green) || 0,
+        red: Number(dados.red) || 0,
+        pendentes: Number(dados.pendentes) || 0,
+        relatorioEnviado: !!dados.relatorioEnviado
       };
 
-      reconstruirMapa();
+      reconstruirEnviados();
 
       console.log(
-        `🟢 Histórico recuperado: ${historicoDia.enviados.length} entradas`
+        `Histórico recuperado: ${historicoDia.enviados.length}`
       );
     }
 
-  } catch (erro) {
-
+  } catch (e) {
     console.log(
-      '⚠️ Erro ao ler histórico Redis:',
-      erro.message
+      'Erro lendo histórico:',
+      e.message
     );
   }
 }
 
+function reconstruirEnviados() {
+  enviados.clear();
+
+  for (const aposta of historicoDia.enviados) {
+    if (aposta?.id && aposta?.liga) {
+      enviados.add(
+        `${aposta.liga}_${aposta.id}`
+      );
+    }
+  }
+}
 
 async function garantirNovoDia() {
-
   const hoje = dataBrasilia();
 
   if (historicoDia.data !== hoje) {
-
     historicoDia = {
-
       data: hoje,
       enviados: [],
       green: 0,
       red: 0,
       pendentes: 0,
       relatorioEnviado: false
-
     };
 
     enviados.clear();
@@ -363,98 +268,78 @@ async function garantirNovoDia() {
     await salvarHistorico();
 
     console.log(
-      '📅 Novo dia:',
+      'Novo dia:',
       hoje
     );
   }
 }
 
 
-// ============================================================
-// HTTP / JSON
-// ============================================================
+// ======================================================
+// BUSCAR JSON
+// ======================================================
 
 async function getJson(url) {
+  const controller = new AbortController();
 
-  const controller =
-    new AbortController();
-
-  const timeout =
-    setTimeout(
-      () => controller.abort(),
-      8000
-    );
+  const timeout = setTimeout(
+    () => controller.abort(),
+    8000
+  );
 
   try {
+    const r = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0'
+      },
+      signal: controller.signal
+    });
 
-    const resposta = await fetch(
-      url,
-      {
-        headers: {
-          'User-Agent': 'Mozilla/5.0'
-        },
-        signal: controller.signal
-      }
-    );
-
-    if (!resposta.ok) {
-
-      throw new Error(
-        `HTTP ${resposta.status}`
-      );
+    if (!r.ok) {
+      throw new Error(`HTTP ${r.status}`);
     }
 
-    return await resposta.json();
+    return await r.json();
 
   } finally {
-
     clearTimeout(timeout);
   }
 }
 
+function numero(v) {
+  const n = parseFloat(
+    String(v ?? 0)
+      .replace(',', '.')
+      .replace('%', '')
+  );
 
-// ============================================================
-// UTILITÁRIOS
-// ============================================================
+  return Number.isFinite(n) ? n : 0;
+}
 
-function numero(valor) {
-
-  const n =
-    parseFloat(
-      String(valor ?? 0)
-        .replace(',', '.')
-        .replace('%', '')
-    );
-
-  return Number.isFinite(n)
-    ? n
-    : 0;
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 
-function pegaStat(estatisticas, nomes) {
+// ======================================================
+// ESTATÍSTICAS ESPN
+// ======================================================
 
-  if (!Array.isArray(estatisticas)) {
-    return null;
-  }
+function pegaStat(stats, nomes) {
+  if (!Array.isArray(stats)) return null;
 
   for (const nome of nomes) {
+    const item = stats.find(x =>
+      String(x.name || '').toLowerCase() ===
+        nome.toLowerCase() ||
+      String(x.abbreviation || '').toLowerCase() ===
+        nome.toLowerCase()
+    );
 
-    const encontrado =
-      estatisticas.find(
-        x =>
-          x.name?.toLowerCase() ===
-            nome.toLowerCase() ||
-
-          x.abbreviation?.toLowerCase() ===
-            nome.toLowerCase()
-      );
-
-    if (encontrado) {
-
+    if (item) {
       return numero(
-        encontrado.displayValue ??
-        encontrado.value ??
+        item.displayValue ??
+        item.value ??
         0
       );
     }
@@ -464,17 +349,12 @@ function pegaStat(estatisticas, nomes) {
 }
 
 
-// ============================================================
-// RAIO-X COMPLETO
-// ============================================================
+// ======================================================
+// RAIO-X
+// ======================================================
 
-async function buscarRaioXCompleto(
-  liga,
-  eventId
-) {
-
-  const resultado = {
-
+async function buscarRaioX(liga, eventId) {
+  const r = {
     chutesCasa: 0,
     chutesFora: 0,
 
@@ -487,21 +367,242 @@ async function buscarRaioXCompleto(
     escCasa: 0,
     escFora: 0,
 
-    amarelosCasa: 0,
-    amarelosFora: 0,
-
     cruzCasa: 0,
     cruzFora: 0,
 
-    apCasa: null,
-    apFora: null,
+    ataquesCasa: null,
+    ataquesFora: null,
 
     temAP: false,
     temCruz: false
   };
 
-
   try {
+    const s = await getJson(
+      `https://site.api.espn.com/apis/site/v2/sports/soccer/${liga}/summary?event=${eventId}`
+    );
 
-    const resumo = await getJson(
-      `https://site.api.espn.com/apis/site/v2/sports
+    const teams =
+      s?.boxscore?.teams || [];
+
+    for (let i = 0; i < teams.length; i++) {
+      const bloco = teams[i];
+
+      const id =
+        String(bloco?.team?.id || '');
+
+      let lado =
+        i === 0 ? 'home' : 'away';
+
+      const comp =
+        s?.header?.competitions?.[0]
+          ?.competitors
+          ?.find(
+            x =>
+              String(x.team?.id) === id
+          );
+
+      if (comp) {
+        lado = comp.homeAway;
+      }
+
+      const stats =
+        bloco?.statistics || [];
+
+      const chutes =
+        pegaStat(stats, [
+          'totalShots',
+          'shots'
+        ]) ?? 0;
+
+      const alvo =
+        pegaStat(stats, [
+          'shotsOnTarget',
+          'shotsOnGoal'
+        ]) ?? 0;
+
+      const posse =
+        pegaStat(stats, [
+          'possessionPct',
+          'possession'
+        ]) ?? 0;
+
+      const escanteios =
+        pegaStat(stats, [
+          'wonCorners',
+          'cornerKicks'
+        ]) ?? 0;
+
+      const cruzamentos =
+        pegaStat(stats, [
+          'crosses',
+          'totalCrosses',
+          'totalCross',
+          'cross'
+        ]);
+
+      const ataques =
+        pegaStat(stats, [
+          'dangerousAttacks',
+          'dangerousAttack',
+          'attack'
+        ]);
+
+      if (lado === 'home') {
+
+        r.chutesCasa = chutes;
+        r.alvoCasa = alvo;
+        r.posseCasa = posse;
+        r.escCasa = escanteios;
+
+        if (cruzamentos !== null) {
+          r.cruzCasa = cruzamentos;
+          r.temCruz = true;
+        }
+
+        if (ataques !== null) {
+          r.ataquesCasa = ataques;
+          r.temAP = true;
+        }
+
+      } else {
+
+        r.chutesFora = chutes;
+        r.alvoFora = alvo;
+        r.posseFora = posse;
+
+        // CORRIGIDO
+        r.escFora = escanteios;
+
+        if (cruzamentos !== null) {
+          r.cruzFora = cruzamentos;
+          r.temCruz = true;
+        }
+
+        if (ataques !== null) {
+          r.ataquesFora = ataques;
+          r.temAP = true;
+        }
+      }
+    }
+
+  } catch (e) {
+    console.log(
+      `Raio-X ${liga}/${eventId}:`,
+      e.message
+    );
+  }
+
+  return r;
+}
+
+
+// ======================================================
+// DEFINIR TIME DE PRESSÃO
+// ======================================================
+
+function definirTimePrecisa(jogo, r) {
+
+  if (
+    jogo.golsCasa >
+    jogo.golsFora
+  ) {
+    return {
+      lado: 'away',
+      nome: jogo.fora,
+      chutes: r.chutesFora,
+      alvo: r.alvoFora,
+      posse: r.posseFora,
+      escanteios: r.escFora,
+      cruzamentos: r.cruzFora,
+      ataques: r.ataquesFora
+    };
+  }
+
+  if (
+    jogo.golsCasa <
+    jogo.golsFora
+  ) {
+    return {
+      lado: 'home',
+      nome: jogo.casa,
+      chutes: r.chutesCasa,
+      alvo: r.alvoCasa,
+      posse: r.posseCasa,
+      escanteios: r.escCasa,
+      cruzamentos: r.cruzCasa,
+      ataques: r.ataquesCasa
+    };
+  }
+
+  // Empate: escolhe quem apresenta
+  // maior pressão estatística.
+
+  const pressaoCasa =
+    r.alvoCasa * 3 +
+    r.chutesCasa +
+    r.escCasa * 2 +
+    r.posseCasa / 10;
+
+  const pressaoFora =
+    r.alvoFora * 3 +
+    r.chutesFora +
+    r.escFora * 2 +
+    r.posseFora / 10;
+
+  if (pressaoCasa >= pressaoFora) {
+    return {
+      lado: 'home',
+      nome: jogo.casa,
+      chutes: r.chutesCasa,
+      alvo: r.alvoCasa,
+      posse: r.posseCasa,
+      escanteios: r.escCasa,
+      cruzamentos: r.cruzCasa,
+      ataques: r.ataquesCasa
+    };
+  }
+
+  return {
+    lado: 'away',
+    nome: jogo.fora,
+    chutes: r.chutesFora,
+    alvo: r.alvoFora,
+    posse: r.posseFora,
+    escanteios: r.escFora,
+    cruzamentos: r.cruzFora,
+    ataques: r.ataquesFora
+  };
+}
+
+
+// ======================================================
+// FILTROS
+// ======================================================
+
+function analisarJogo(jogo, r) {
+
+  const diferenca =
+    Math.abs(
+      jogo.golsCasa -
+      jogo.golsFora
+    );
+
+  if (
+    diferenca >
+    FILTROS.diferencaMaxima
+  ) {
+    return null;
+  }
+
+  const time =
+    definirTimePrecisa(
+      jogo,
+      r
+    );
+
+  if (!time) return null;
+
+  const totalChutes =
+    r.chutesCasa +
+    r
