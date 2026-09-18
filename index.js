@@ -4,462 +4,305 @@ const PORT = process.env.PORT || 3000;
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN || process.env.TOKEN || '';
 const CHAT_ID = process.env.CHAT_ID || process.env.TELEGRAM_CHAT_ID || '';
 
-/*
-=========================================================
-UPSTASH REDIS
-=========================================================
-*/
-
-const REDIS_URL =
-  process.env.UPSTASH_REDIS_REST_URL || '';
-
-const REDIS_TOKEN =
-  process.env.UPSTASH_REDIS_REST_TOKEN || '';
-
-async function redisCommand(command) {
-
-  if (!REDIS_URL || !REDIS_TOKEN) {
-    console.log('⚠️ Redis não configurado.');
-    return null;
-  }
-
-  try {
-
-    const r = await fetch(
-      REDIS_URL,
-      {
-        method: 'POST',
-
-        headers: {
-          'Authorization':
-            `Bearer ${REDIS_TOKEN}`,
-
-          'Content-Type':
-            'application/json'
-        },
-
-        body: JSON.stringify(command)
-      }
-    );
-
-    if (!r.ok) {
-      throw new Error(
-        `Redis HTTP ${r.status}`
-      );
-    }
-
-    const data = await r.json();
-
-    return data.result;
-
-  } catch (e) {
-
-    console.log(
-      `❌ Redis: ${e.message}`
-    );
-
-    return null;
-  }
-}
-
-async function redisGet(chave) {
-
-  return await redisCommand([
-    'GET',
-    chave
-  ]);
-}
-
-async function redisSet(chave, valor) {
-
-  return await redisCommand([
-    'SET',
-    chave,
-    valor
-  ]);
-}
-
-/*
-=========================================================
-CHAVE DO HISTÓRICO
-=========================================================
-*/
-
-function chaveHistorico(data) {
-
-  return `gol2t:v34.6:historico:${data}`;
-}
-
-/*
-=========================================================
-LIGAS
-=========================================================
-*/
+const REDIS_URL = process.env.UPSTASH_REDIS_REST_URL || '';
+const REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || '';
+const REDIS_ATIVO = Boolean(REDIS_URL && REDIS_TOKEN);
 
 const LIGAS_PERMITIDAS = [
-  "bra.1","bra.2","por.1","eng.1","esp.1","ger.1",
-  "ita.1","fra.1","ned.1","bel.1","tur.1","sco.1",
-  "conmebol.libertadores","conmebol.sudamericana",
-  "usa.1","mex.1","arg.1","uefa.champions","uefa.europa"
+  'bra.1','bra.2','por.1','eng.1','esp.1','ger.1',
+  'ita.1','fra.1','ned.1','bel.1','tur.1','sco.1',
+  'conmebol.libertadores','conmebol.sudamericana',
+  'usa.1','mex.1','arg.1','uefa.champions','uefa.europa'
 ];
 
-/*
-=========================================================
-FILTROS
-=========================================================
-*/
-
 const FILTROS = {
-
   max_diferenca_gols: 2,
-
   min_chutes_gol_time_precisa: 2,
-
   min_total_chutes_jogo: 8,
-
   minuto_minimo: 40,
-
   minuto_maximo: 55,
-
   posse_minima_pressao: 60,
-
   min_pressao_score: 6
 };
 
 let ultimoScan = null;
-
 let totalAprovados = 0;
-
 let totalEnviados = 0;
-
 let totalErros = 0;
-
-/*
-=========================================================
-CONTROLE DE DUPLICIDADE EM MEMÓRIA
-=========================================================
-*/
+let relatorioEmExecucao = false;
 
 const enviados = new Map();
 
-/*
-=========================================================
-DATA DE BRASÍLIA
-=========================================================
-*/
-
 function dataBrasilia() {
-
-  return new Date().toLocaleDateString(
-    'pt-BR',
-    {
-      timeZone:
-        'America/Sao_Paulo'
-    }
-  );
+  return new Intl.DateTimeFormat('pt-BR', {
+    timeZone: 'America/Sao_Paulo',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).format(new Date());
 }
 
-/*
-=========================================================
-HISTÓRICO DIÁRIO
-=========================================================
-*/
+function horaBrasilia() {
+  const partes = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Sao_Paulo',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  }).formatToParts(new Date());
+
+  const hora = Number(partes.find(p => p.type === 'hour')?.value || 0);
+  const minuto = Number(partes.find(p => p.type === 'minute')?.value || 0);
+
+  return { hora, minuto };
+}
+
+let dataControle = dataBrasilia();
 
 let historicoDia = {
-
-  data:
-    dataBrasilia(),
-
+  data: dataControle,
   enviados: [],
-
   green: 0,
-
   red: 0,
-
   pendentes: 0,
-
   relatorioEnviado: false
 };
 
-/*
-=========================================================
-SALVAR HISTÓRICO NO REDIS
-=========================================================
-*/
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-async function salvarHistorico() {
-
-  try {
-
-    const chave =
-      chaveHistorico(
-        historicoDia.data
-      );
-
-    const valor =
-      JSON.stringify(
-        historicoDia
-      );
-
-    await redisSet(
-      chave,
-      valor
-    );
-
-    console.log(
-      `💾 Histórico salvo no Redis: ${historicoDia.enviados.length} alertas`
-    );
-
-  } catch (e) {
-
-    console.log(
-      `❌ Erro salvando histórico: ${e.message}`
-    );
-  }
+function chaveHistorico(data) {
+  return `gol2t:v34.6:historico:${data}`;
 }
 
-/*
-=========================================================
-CARREGAR HISTÓRICO DO REDIS
-=========================================================
-*/
-
-async function carregarHistorico() {
-
-  const hoje =
-    dataBrasilia();
+async function redisGet(chave) {
+  if (!REDIS_ATIVO) return null;
 
   try {
-
-    const chave =
-      chaveHistorico(
-        hoje
-      );
-
-    const salvo =
-      await redisGet(
-        chave
-      );
-
-    if (salvo) {
-
-      const dados =
-        typeof salvo === 'string'
-          ? JSON.parse(salvo)
-          : salvo;
-
-      if (
-        dados &&
-        dados.data === hoje
-      ) {
-
-        historicoDia = {
-
-          data:
-            dados.data,
-
-          enviados:
-            Array.isArray(
-              dados.enviados
-            )
-              ? dados.enviados
-              : [],
-
-          green:
-            Number(
-              dados.green || 0
-            ),
-
-          red:
-            Number(
-              dados.red || 0
-            ),
-
-          pendentes:
-            Number(
-              dados.pendentes || 0
-            ),
-
-          relatorioEnviado:
-            Boolean(
-              dados.relatorioEnviado
-            )
-        };
-
-        console.log(
-          `📥 Histórico recuperado do Redis: ${historicoDia.enviados.length} alertas`
-        );
-
-      } else {
-
-        console.log(
-          '📭 Nenhum histórico válido para hoje.'
-        );
+    const r = await fetch(
+      `${REDIS_URL}/get/${encodeURIComponent(chave)}`,
+      {
+        headers: {
+          Authorization: `Bearer ${REDIS_TOKEN}`
+        }
       }
+    );
 
-    } else {
-
-      console.log(
-        '📭 Redis sem histórico de hoje.'
-      );
+    if (!r.ok) {
+      throw new Error(`Redis GET HTTP ${r.status}`);
     }
 
-  } catch (e) {
+    const d = await r.json();
 
-    console.log(
-      `❌ Erro carregando histórico: ${e.message}`
-    );
+    return d.result ?? null;
+
+  } catch (e) {
+    console.log(`⚠️ Redis GET: ${e.message}`);
+    return null;
   }
 }
 
-/*
-=========================================================
-GARANTIR NOVO DIA
-=========================================================
-*/
+async function redisSet(chave, valor) {
+  if (!REDIS_ATIVO) return false;
+
+  try {
+    const r = await fetch(
+      `${REDIS_URL}/set/${encodeURIComponent(chave)}`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${REDIS_TOKEN}`,
+          'Content-Type': 'text/plain; charset=utf-8'
+        },
+        body: valor
+      }
+    );
+
+    if (!r.ok) {
+      throw new Error(`Redis SET HTTP ${r.status}`);
+    }
+
+    const d = await r.json();
+
+    if (d.error) {
+      throw new Error(d.error);
+    }
+
+    return d.result === 'OK';
+
+  } catch (e) {
+    console.log(`⚠️ Redis SET: ${e.message}`);
+    return false;
+  }
+}
+
+async function salvarHistorico() {
+  if (!REDIS_ATIVO) return;
+
+  await redisSet(
+    chaveHistorico(historicoDia.data),
+    JSON.stringify(historicoDia)
+  );
+}
+
+function reconstruirMapaEnviados() {
+  enviados.clear();
+
+  for (const alerta of historicoDia.enviados) {
+    if (!alerta || !alerta.id || !alerta.liga) continue;
+
+    const chave = `${alerta.liga}_${alerta.id}_HT`;
+
+    enviados.set(chave, Date.now());
+  }
+}
 
 async function garantirNovoDia() {
+  const hoje = dataBrasilia();
 
-  const hoje =
-    dataBrasilia();
+  if (hoje !== dataControle) {
 
-  if (
-    hoje !==
-    historicoDia.data
-  ) {
+    dataControle = hoje;
 
     historicoDia = {
-
-      data:
-        hoje,
-
+      data: hoje,
       enviados: [],
-
       green: 0,
-
       red: 0,
-
       pendentes: 0,
-
-      relatorioEnviado:
-        false
+      relatorioEnviado: false
     };
 
     enviados.clear();
 
-    console.log(
-      `📅 Novo dia iniciado em Brasília: ${hoje}`
-    );
+    await salvarHistorico();
 
-    await carregarHistorico();
+    console.log(`📅 Novo dia iniciado em Brasília: ${hoje}`);
+
+    return;
+  }
+
+  if (historicoDia.data !== hoje) {
+    historicoDia.data = hoje;
   }
 }
 
-const sleep =
-  ms =>
-    new Promise(
-      r => setTimeout(r, ms)
+async function carregarHistorico() {
+
+  if (!REDIS_ATIVO) {
+    console.log(
+      '⚠️ Redis não configurado. Histórico ficará somente em memória.'
     );
 
-/*
-=========================================================
-GET JSON
-=========================================================
-*/
+    return;
+  }
 
-async function getJson(url) {
+  const hoje = dataBrasilia();
 
-  const c =
-    new AbortController();
+  const salvo = await redisGet(
+    chaveHistorico(hoje)
+  );
 
-  const t =
-    setTimeout(
-      () => c.abort(),
-      8000
+  if (!salvo) {
+    console.log(
+      `🟢 Redis conectado. Nenhum histórico salvo para ${hoje}.`
     );
+
+    return;
+  }
 
   try {
 
-    const r =
-      await fetch(
-        url,
-        {
-          headers: {
-            'User-Agent':
-              'Mozilla/5.0'
-          },
+    const dados =
+      typeof salvo === 'string'
+        ? JSON.parse(salvo)
+        : salvo;
 
-          signal:
-            c.signal
-        }
+    if (
+      dados &&
+      dados.data === hoje &&
+      Array.isArray(dados.enviados)
+    ) {
+
+      historicoDia = {
+        data: hoje,
+        enviados: dados.enviados,
+        green: Number(dados.green) || 0,
+        red: Number(dados.red) || 0,
+        pendentes: Number(dados.pendentes) || 0,
+        relatorioEnviado: Boolean(
+          dados.relatorioEnviado
+        )
+      };
+
+      reconstruirMapaEnviados();
+
+      console.log(
+        `🟢 Histórico recuperado do Redis: ${historicoDia.enviados.length} alerta(s).`
       );
+    }
+
+  } catch (e) {
+
+    console.log(
+      `⚠️ Erro lendo histórico do Redis: ${e.message}`
+    );
+
+  }
+}
+
+async function getJson(url) {
+
+  const controller = new AbortController();
+
+  const timeout = setTimeout(
+    () => controller.abort(),
+    8000
+  );
+
+  try {
+
+    const r = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0'
+      },
+      signal: controller.signal
+    });
 
     if (!r.ok) {
-
-      throw new Error(
-        `HTTP ${r.status}`
-      );
+      throw new Error(`HTTP ${r.status}`);
     }
 
     return await r.json();
 
   } finally {
 
-    clearTimeout(t);
+    clearTimeout(timeout);
+
   }
 }
-
-/*
-=========================================================
-NÚMERO
-=========================================================
-*/
 
 function numero(v) {
 
-  const n =
-    parseFloat(
-      String(v ?? 0)
-        .replace(',', '.')
-        .replace('%', '')
-    );
+  const n = parseFloat(
+    String(v ?? 0)
+      .replace(',', '.')
+      .replace('%', '')
+  );
 
-  return Number.isFinite(n)
-    ? n
-    : 0;
+  return Number.isFinite(n) ? n : 0;
 }
-
-/*
-=========================================================
-PEGA STAT
-=========================================================
-*/
 
 function pegaStat(S, nomes) {
 
-  if (
-    !Array.isArray(S)
-  ) {
+  if (!Array.isArray(S)) return null;
 
-    return null;
-  }
+  for (const nome of nomes) {
 
-  for (
-    let nome of nomes
-  ) {
-
-    const s =
-      S.find(
-        x =>
-          x.name?.toLowerCase() ===
-            nome.toLowerCase() ||
-
-          x.abbreviation?.toLowerCase() ===
-            nome.toLowerCase()
-      );
+    const s = S.find(x =>
+      x.name?.toLowerCase() === nome.toLowerCase() ||
+      x.abbreviation?.toLowerCase() === nome.toLowerCase()
+    );
 
     if (s) {
-
       return numero(
         s.displayValue ??
         s.value ??
@@ -471,62 +314,43 @@ function pegaStat(S, nomes) {
   return null;
 }
 
-/*
-=========================================================
-RAIO-X COMPLETO
-=========================================================
-*/
-
-async function buscarRaioXCompleto(
-  liga,
-  eventId
-) {
+async function buscarRaioXCompleto(liga, eventId) {
 
   const raio = {
 
     chutesCasa: 0,
-
     chutesFora: 0,
 
     alvoCasa: 0,
-
     alvoFora: 0,
 
     posseCasa: 0,
-
     posseFora: 0,
 
     escCasa: 0,
-
     escFora: 0,
 
     amarelosCasa: 0,
-
     amarelosFora: 0,
 
     cruzCasa: 0,
-
     cruzFora: 0,
 
     apCasa: null,
-
     apFora: null,
 
     temAP: false,
-
     temCruz: false
   };
 
   try {
 
-    const summary =
-      await getJson(
-        `https://site.api.espn.com/apis/site/v2/sports/soccer/${liga}/summary?event=${eventId}`
-      );
+    const summary = await getJson(
+      `https://site.api.espn.com/apis/site/v2/sports/soccer/${liga}/summary?event=${eventId}`
+    );
 
     const teams =
-      summary?.boxscore?.teams ||
-      [];
+      summary?.boxscore?.teams || [];
 
     for (
       let i = 0;
@@ -534,8 +358,7 @@ async function buscarRaioXCompleto(
       i++
     ) {
 
-      const bloco =
-        teams[i];
+      const bloco = teams[i];
 
       const id =
         String(
@@ -553,63 +376,44 @@ async function buscarRaioXCompleto(
           ?.competitors
           ?.find(
             c =>
-              String(
-                c.team?.id
-              ) === id
+              String(c.team?.id) === id
           );
 
       if (comp) {
-
-        lado =
-          comp.homeAway;
+        lado = comp.homeAway;
       }
 
       const S =
-        bloco?.statistics ||
-        [];
+        bloco?.statistics || [];
 
       const chutes =
         pegaStat(
           S,
-          [
-            'totalShots',
-            'shots'
-          ]
+          ['totalShots', 'shots']
         ) ?? 0;
 
       const alvo =
         pegaStat(
           S,
-          [
-            'shotsOnTarget',
-            'shotsOnGoal'
-          ]
+          ['shotsOnTarget', 'shotsOnGoal']
         ) ?? 0;
 
       const posse =
         pegaStat(
           S,
-          [
-            'possessionPct',
-            'possession'
-          ]
+          ['possessionPct', 'possession']
         ) ?? 0;
 
       const esc =
         pegaStat(
           S,
-          [
-            'wonCorners',
-            'cornerKicks'
-          ]
+          ['wonCorners', 'cornerKicks']
         ) ?? 0;
 
       const amarelos =
         pegaStat(
           S,
-          [
-            'yellowCards'
-          ]
+          ['yellowCards']
         ) ?? 0;
 
       const ap =
@@ -633,109 +437,54 @@ async function buscarRaioXCompleto(
           ]
         );
 
-      if (
-        lado === 'home'
-      ) {
+      if (lado === 'home') {
 
-        raio.chutesCasa =
-          chutes;
+        raio.chutesCasa = chutes;
+        raio.alvoCasa = alvo;
+        raio.posseCasa = posse;
+        raio.escCasa = esc;
+        raio.amarelosCasa = amarelos;
 
-        raio.alvoCasa =
-          alvo;
-
-        raio.posseCasa =
-          posse;
-
-        raio.escCasa =
-          esc;
-
-        raio.amarelosCasa =
-          amarelos;
-
-        if (
-          cruz !== null
-        ) {
-
-          raio.cruzCasa =
-            cruz;
-
-          raio.temCruz =
-            true;
+        if (cruz !== null) {
+          raio.cruzCasa = cruz;
+          raio.temCruz = true;
         }
 
-        if (
-          ap !== null
-        ) {
-
-          raio.apCasa =
-            ap;
-
-          raio.temAP =
-            true;
+        if (ap !== null) {
+          raio.apCasa = ap;
+          raio.temAP = true;
         }
 
       } else {
 
-        raio.chutesFora =
-          chutes;
+        raio.chutesFora = chutes;
+        raio.alvoFora = alvo;
+        raio.posseFora = posse;
+        raio.escFora = esc;
+        raio.amarelosFora = amarelos;
 
-        raio.alvoFora =
-          alvo;
-
-        raio.posseFora =
-          posse;
-
-        raio.escFora =
-          esc;
-
-        raio.amarelosFora =
-          amarelos;
-
-        if (
-          cruz !== null
-        ) {
-
-          raio.cruzFora =
-            cruz;
-
-          raio.temCruz =
-            true;
+        if (cruz !== null) {
+          raio.cruzFora = cruz;
+          raio.temCruz = true;
         }
 
-        if (
-          ap !== null
-        ) {
-
-          raio.apFora =
-            ap;
-
-          raio.temAP =
-            true;
+        if (ap !== null) {
+          raio.apFora = ap;
+          raio.temAP = true;
         }
       }
     }
 
-  } catch (e) {}
+  } catch (e) {
+    // Mantém os valores padrão quando alguma estatística não estiver disponível.
+  }
 
   return raio;
 }
 
-/*
-=========================================================
-FILTRO
-=========================================================
-*/
+function checaJogo(jogo, raio) {
 
-function checaJogo(
-  jogo,
-  raio
-) {
-
-  if (
-    !LIGAS_PERMITIDAS.includes(
-      jogo.liga
-    )
-  ) {
+  if (!LIGAS_PERMITIDAS.includes(jogo.liga)) {
 
     return {
       aprovado: false,
@@ -758,10 +507,8 @@ function checaJogo(
   }
 
   if (
-    (
-      jogo.chutes_casa +
-      jogo.chutes_fora
-    ) <
+    jogo.chutes_casa +
+    jogo.chutes_fora <
     FILTROS.min_total_chutes_jogo
   ) {
 
@@ -777,14 +524,11 @@ function checaJogo(
 
   const posseCasaPct =
     totalPosse > 0
-
       ? Math.round(
-          (
-            raio.posseCasa /
-            totalPosse
-          ) * 100
+          (raio.posseCasa /
+            totalPosse) *
+          100
         )
-
       : 50;
 
   const posseForaPct =
@@ -792,15 +536,10 @@ function checaJogo(
     posseCasaPct;
 
   let timePrecisa = '';
-
   let chutesPrecisa = 0;
-
   let posseTime = 0;
-
   let cruzTime = 0;
-
   let escTime = 0;
-
   let apTime = 0;
 
   if (
@@ -812,7 +551,7 @@ function checaJogo(
       jogo.nome_casa;
 
     chutesPrecisa =
-      jogo.alvo_casa;
+      raio.alvoCasa;
 
     posseTime =
       posseCasaPct;
@@ -835,7 +574,7 @@ function checaJogo(
       jogo.nome_fora;
 
     chutesPrecisa =
-      jogo.alvo_fora;
+      raio.alvoFora;
 
     posseTime =
       posseForaPct;
@@ -852,8 +591,8 @@ function checaJogo(
   } else {
 
     const casaMelhor =
-      jogo.alvo_casa >=
-      jogo.alvo_fora;
+      raio.alvoCasa >=
+      raio.alvoFora;
 
     timePrecisa =
       casaMelhor
@@ -862,8 +601,8 @@ function checaJogo(
 
     chutesPrecisa =
       Math.max(
-        jogo.alvo_casa,
-        jogo.alvo_fora
+        raio.alvoCasa,
+        raio.alvoFora
       );
 
     posseTime =
@@ -882,652 +621,4 @@ function checaJogo(
         : raio.escFora;
 
     apTime =
-      casaMelhor
-        ? raio.apCasa || 0
-        : raio.apFora || 0;
-  }
-
-  if (
-    chutesPrecisa <
-    FILTROS.min_chutes_gol_time_precisa
-  ) {
-
-    return {
-      aprovado: false,
-      motivo: 'alvo'
-    };
-  }
-
-  const scorePressao =
-    cruzTime +
-    (escTime * 2) +
-    (apTime / 10);
-
-  if (
-    scorePressao <
-    FILTROS.min_pressao_score
-  ) {
-
-    return {
-      aprovado: false,
-
-      motivo:
-        `score baixo ${scorePressao.toFixed(1)}`
-    };
-  }
-
-  if (
-    posseTime <
-    FILTROS.posse_minima_pressao
-  ) {
-
-    return {
-      aprovado: false,
-
-      motivo:
-        `posse pressao ${posseTime}% < ${FILTROS.posse_minima_pressao}%`
-    };
-  }
-
-  let zonaPressao =
-    'Meio';
-
-  if (
-    cruzTime >= 8 ||
-    (
-      cruzTime >= 5 &&
-      escTime >= 2
-    )
-  ) {
-
-    zonaPressao =
-      `Lateral (${cruzTime} cruz)`;
-
-  } else if (
-    escTime >= 3
-  ) {
-
-    zonaPressao =
-      `Abafa Área (${escTime} esc)`;
-
-  } else if (
-    apTime >= 15
-  ) {
-
-    zonaPressao =
-      `Meio-Perigoso (${apTime} AP)`;
-  }
-
-  return {
-
-    aprovado: true,
-
-    timePrecisa,
-
-    chutesPrecisa,
-
-    totalChutes:
-      jogo.chutes_casa +
-      jogo.chutes_fora,
-
-    possePct:
-      posseTime,
-
-    scorePressao,
-
-    zonaPressao
-  };
-}
-
-/*
-=========================================================
-TELEGRAM — ALERTA
-=========================================================
-*/
-
-async function enviarTelegram(
-  jogo,
-  analise,
-  raio
-) {
-
-  if (
-    !TELEGRAM_TOKEN ||
-    !CHAT_ID
-  ) {
-
-    return false;
-  }
-
-  const pCasa =
-    (
-      raio.posseCasa +
-      raio.posseFora
-    ) > 0
-
-      ? Math.round(
-          (
-            raio.posseCasa /
-            (
-              raio.posseCasa +
-              raio.posseFora
-            )
-          ) * 100
-        )
-
-      : 50;
-
-  const linhaAP =
-    raio.temAP
-
-      ? `🔥 Ataques Perigosos: ${raio.apCasa ?? 0}x${raio.apFora ?? 0}\n`
-
-      : '';
-
-  const linhaCruz =
-    raio.temCruz
-
-      ? `↗️ Cruzamentos: ${raio.cruzCasa}x${raio.cruzFora}\n`
-
-      : '';
-
-  const msg =
-`🚨 RAIO-X GOL 2T — V34.6 60% POSSE
-
-🏆 ${jogo.liga.toUpperCase()}
-⚽ ${jogo.nome_casa} ${jogo.gols_casa}x${jogo.gols_fora} ${jogo.nome_fora}
-⏱️ ${jogo.minutoTexto}
-
-📊 ESTATÍSTICAS HT:
-🥅 Chutes: ${raio.chutesCasa}x${raio.chutesFora} (Total: ${analise.totalChutes})
-🎯 No Alvo: ${raio.alvoCasa}x${raio.alvoFora}
-${linhaAP}${linhaCruz}🚩 Escanteios: ${raio.escCasa}x${raio.escFora}
-📊 Posse: ${pCasa}% x ${100-pCasa}%
-🟨 Amarelos: ${raio.amarelosCasa}x${raio.amarelosFora}
-
-📍 PRESSÃO: ${analise.zonaPressao}
-📈 Score Pressão: ${analise.scorePressao.toFixed(1)} | Posse time: ${analise.possePct}% ✅ 60%+
-
-🎯 Precisa: ${analise.timePrecisa} (${analise.chutesPrecisa} no alvo)
-✅ FILTRO: 60% POSSE + PRESSAO LATERAL`;
-
-  try {
-
-    const r =
-      await fetch(
-        `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`,
-        {
-          method: 'POST',
-
-          headers: {
-            'Content-Type':
-              'application/json'
-          },
-
-          body:
-            JSON.stringify({
-              chat_id:
-                CHAT_ID,
-
-              text:
-                msg
-            })
-        }
-      );
-
-    const d =
-      await r.json();
-
-    if (!d.ok) {
-
-      throw new Error(
-        d.description
-      );
-    }
-
-    totalEnviados++;
-
-    console.log(
-      `📨 Enviado: ${jogo.nome_casa} x ${jogo.nome_fora} | ${analise.zonaPressao} | ${analise.possePct}%`
-    );
-
-    /*
-    =====================================================
-    SALVA ALERTA NO HISTÓRICO
-    =====================================================
-    */
-
-    await garantirNovoDia();
-
-    historicoDia.enviados.push({
-
-      id:
-        String(jogo.id),
-
-      liga:
-        jogo.liga,
-
-      casa:
-        jogo.nome_casa,
-
-      fora:
-        jogo.nome_fora,
-
-      golsCasaAlerta:
-        jogo.gols_casa,
-
-      golsForaAlerta:
-        jogo.gols_fora,
-
-      minutoAlerta:
-        jogo.minuto,
-
-      status:
-        'pendente'
-    });
-
-    await salvarHistorico();
-
-    return true;
-
-  } catch (e) {
-
-    totalErros++;
-
-    console.log(
-      `❌ Telegram: ${e.message}`
-    );
-
-    return false;
-  }
-}
-
-/*
-=========================================================
-BUSCAR JOGOS ESPN
-=========================================================
-*/
-
-async function buscarJogosESPN() {
-
-  const aprovados = [];
-
-  for (
-    const liga
-    of LIGAS_PERMITIDAS
-  ) {
-
-    try {
-
-      const data =
-        await getJson(
-          `https://site.api.espn.com/apis/site/v2/sports/soccer/${liga}/scoreboard`
-        );
-
-      if (
-        !Array.isArray(
-          data.events
-        )
-      ) {
-
-        continue;
-      }
-
-      for (
-        const ev
-        of data.events
-      ) {
-
-        try {
-
-          const comp =
-            ev?.competitions?.[0];
-
-          if (!comp) {
-            continue;
-          }
-
-          const status =
-            comp?.status?.type?.name ||
-            '';
-
-          if (
-            ![
-              'STATUS_HALFTIME',
-              'STATUS_SECOND_HALF'
-            ].includes(
-              status
-            )
-          ) {
-
-            continue;
-          }
-
-          let minuto =
-            numero(
-              comp?.status?.clock
-            );
-
-          if (
-            status ===
-            'STATUS_HALFTIME'
-          ) {
-
-            minuto = 45;
-          }
-
-          if (
-            minuto <
-              FILTROS.minuto_minimo ||
-
-            minuto >
-              FILTROS.minuto_maximo
-          ) {
-
-            continue;
-          }
-
-          const casa =
-            comp.competitors?.find(
-              c =>
-                c.homeAway ===
-                'home'
-            );
-
-          const fora =
-            comp.competitors?.find(
-              c =>
-                c.homeAway ===
-                'away'
-            );
-
-          if (
-            !casa ||
-            !fora
-          ) {
-
-            continue;
-          }
-
-          await sleep(400);
-
-          const raioTemp =
-            await buscarRaioXCompleto(
-              liga,
-              ev.id
-            );
-
-          const jogo = {
-
-            id:
-              String(ev.id),
-
-            liga,
-
-            nome_casa:
-              casa?.team?.displayName ||
-              'Casa',
-
-            nome_fora:
-              fora?.team?.displayName ||
-              'Fora',
-
-            gols_casa:
-              numero(
-                casa.score
-              ),
-
-            gols_fora:
-              numero(
-                fora.score
-              ),
-
-            chutes_casa:
-              raioTemp.chutesCasa,
-
-            chutes_fora:
-              raioTemp.chutesFora,
-
-            alvo_casa:
-              raioTemp.alvoCasa,
-
-            alvo_fora:
-              raioTemp.alvoFora,
-
-            minuto,
-
-            minutoTexto:
-              status ===
-              'STATUS_HALFTIME'
-
-                ? 'INTERVALO'
-
-                : `${Math.floor(minuto)}'`
-          };
-
-          const analise =
-            checaJogo(
-              jogo,
-              raioTemp
-            );
-
-          if (
-            !analise.aprovado
-          ) {
-
-            if (
-              analise.motivo?.includes(
-                'posse'
-              )
-            ) {
-
-              console.log(
-                `🚫 Posse <60%: ${jogo.nome_casa} ${jogo.gols_casa}x${jogo.gols_fora} ${jogo.nome_fora} - ${analise.motivo}`
-              );
-            }
-
-            continue;
-          }
-
-          totalAprovados++;
-
-          aprovados.push({
-
-            jogo,
-
-            analise,
-
-            raio:
-              raioTemp
-          });
-
-        } catch (e) {}
-      }
-
-    } catch (e) {
-
-      totalErros++;
-    }
-  }
-
-  return aprovados;
-}
-
-/*
-=========================================================
-EXECUTAR RADAR
-=========================================================
-*/
-
-async function executarRadar() {
-
-  await garantirNovoDia();
-
-  ultimoScan =
-    new Date().toLocaleString(
-      'pt-BR',
-      {
-        timeZone:
-          'America/Sao_Paulo'
-      }
-    );
-
-  console.log(
-    `\n🔎 Radar V34.6 varrendo...`
-  );
-
-  for (
-    const [id, t]
-    of enviados.entries()
-  ) {
-
-    if (
-      Date.now() - t >
-      3 * 60 * 60 * 1000
-    ) {
-
-      enviados.delete(id);
-    }
-  }
-
-  try {
-
-    const res =
-      await buscarJogosESPN();
-
-    if (
-      !res.length
-    ) {
-
-      console.log(
-        'Nenhum aprovado (precisa 60% posse).'
-      );
-
-      return;
-    }
-
-    for (
-      const {
-        jogo,
-        analise,
-        raio
-      }
-      of res
-    ) {
-
-      const chave =
-        `${jogo.liga}_${jogo.id}_HT`;
-
-      /*
-      ===================================================
-      EVITA DUPLICAR NA MEMÓRIA
-      ===================================================
-      */
-
-      if (
-        enviados.has(chave)
-      ) {
-
-        continue;
-      }
-
-      /*
-      ===================================================
-      EVITA DUPLICAR MESMO APÓS RESTART
-      ===================================================
-      */
-
-      const jaEnviado =
-        historicoDia.enviados.some(
-          a =>
-            String(a.id) ===
-              String(jogo.id) &&
-            a.liga ===
-              jogo.liga
-        );
-
-      if (
-        jaEnviado
-      ) {
-
-        enviados.set(
-          chave,
-          Date.now()
-        );
-
-        continue;
-      }
-
-      if (
-        await enviarTelegram(
-          jogo,
-          analise,
-          raio
-        )
-      ) {
-
-        enviados.set(
-          chave,
-          Date.now()
-        );
-      }
-    }
-
-  } catch (e) {
-
-    console.log(
-      `❌ Radar: ${e.message}`
-    );
-  }
-}
-
-/*
-=========================================================
-VERIFICAR GREEN / RED
-=========================================================
-*/
-
-async function verificarResultado(
-  alerta
-) {
-
-  try {
-
-    const summary =
-      await getJson(
-        `https://site.api.espn.com/apis/site/v2/sports/soccer/${alerta.liga}/summary?event=${alerta.id}`
-      );
-
-    const comp =
-      summary?.header
-        ?.competitions?.[0];
-
-    if (!comp) {
-
-      return null;
-    }
-
-    const status =
-      comp?.status?.type?.name ||
-      '';
-
-    const encerrado =
-      [
-        'STATUS_FINAL',
-        'STATUS_FULL_TIME',
-        'STATUS_FINAL_PEN'
-      ].includes(
-        status
-      );
-
-    if (!encerrado) {
-
-      return null;
-    }
-
-    const casa =
-      comp.competitors?.find(
-        c =>
-          c.homeAway ===
-          'home'
-      );
+      casaMel
