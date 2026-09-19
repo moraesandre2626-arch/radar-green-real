@@ -1308,7 +1308,7 @@ server.listen(
      */
     setInterval(
       ciclo,
-      20 * 60 * 1000
+      3 * 60 * 1000
     );
 
     /*
